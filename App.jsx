@@ -1,4 +1,13 @@
 import { useState, useEffect, useMemo } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+// ===== [필독] Supabase 프로젝트 정보 입력 =====
+// Vercel 배포 시 환경변수(Environment Variables)로 등록하면 가장 안전합니다.
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "YOUR_SUPABASE_PROJECT_URL";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "YOUR_SUPABASE_ANON_KEY";
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const DB_ROW_ID = 1; // 단일 로우로 매치 데이터를 통합 관리하기 위한 고정 ID
 
 // ===== 기존 기록 이월 (18매치 / 80게임) =====
 const BASE_MATCHES = 18;
@@ -14,7 +23,7 @@ const BASE = {
   "서현우":{att:2,g:1,mom:0,a:0},"이찬우":{att:6,g:0,mom:0,a:1},"허재원":{att:3,g:0,mom:0,a:1},
   "박경원":{att:1,g:0,mom:0,a:1},"최세영":{att:1,g:0,mom:0,a:1},"엄준희":{att:10,g:0,mom:2,a:0},
   "손동천":{att:6,g:0,mom:0,a:0},"엽화산":{att:5,g:0,mom:0,a:0},"서성열":{att:4,g:0,mom:0,a:0},
-  "정수환":{att:3,g:0,mom:0,a:0},"주조해":{att:3,g:0,mom:0,a:0},"강준혁":{2:0,g:0,mom:0,a:0},
+  "정수환":{att:3,g:0,mom:0,a:0},"주조해":{att:3,g:0,mom:0,a:0},"강준혁":{att:2,g:0,mom:0,a:0},
   "김인수":{att:2,g:0,mom:0,a:0},"김창민":{att:2,g:0,mom:0,a:0},"장동현":{att:2,g:0,mom:0,a:0},
   "문효식":{att:1,g:0,mom:0,a:0},"이동현":{att:1,g:0,mom:0,a:0},"이윤기":{att:1,g:0,mom:0,a:0},
   "임하성":{att:1,g:0,mom:0,a:0},"차재호":{att:1,g:0,mom:0,a:0},"최영웅":{att:1,g:0,mom:0,a:0},
@@ -54,15 +63,22 @@ export default function App() {
   const [newPlayer, setNewPlayer] = useState("");
   const [query, setQuery] = useState("");
 
-  // KV 스토리지 대용 엔드포인트와 통신 (Vercel 연동용)
-  const fetchRecords = async () => {
+  // Supabase 클라우드에서 데이터 가져오기
+  const fetchFromSupabase = async () => {
     try {
-      const res = await fetch('/api/records');
-      const json = await res.json();
-      if (json && json.players) {
-        setData(json);
+      const { data: dbData, error } = await supabase
+        .from("fc_records")
+        .select("content")
+        .eq("id", DB_ROW_ID)
+        .single();
+
+      if (error || !dbData) {
+        // 테이블은 있되 데이터가 없으면 초기값 세팅
+        const initial = { players: ROSTER, matches: [] };
+        await supabase.from("fc_records").insert([{ id: DB_ROW_ID, content: initial }]);
+        setData(initial);
       } else {
-        setData({ players: ROSTER, matches: [] });
+        setData(dbData.content);
       }
     } catch (e) {
       setData({ players: ROSTER, matches: [] });
@@ -72,19 +88,18 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchRecords();
+    fetchFromSupabase();
   }, []);
 
   const persist = async (next) => {
     setData(next);
     try {
-      await fetch('/api/records', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(next),
-      });
+      await supabase
+        .from("fc_records")
+        .update({ content: next })
+        .eq("id", DB_ROW_ID);
     } catch (e) {
-      showToast("중앙 서버 저장에 실패했습니다.");
+      showToast("Supabase 클라우드 저장에 실패했어요.");
     }
   };
 
@@ -140,7 +155,7 @@ export default function App() {
     return t;
   }, [data]);
 
-  // ---------- 입력 폼 제어 생략 (기존 기직 로직 유지) ----------
+  // ---------- 입력 폼 제어 및 기능 연동 ----------
   const toggleAttendee = (name) => {
     setForm((f) => {
       const on = f.attendees.includes(name);
@@ -193,7 +208,7 @@ export default function App() {
     await persist({ ...data, matches });
     setForm(emptyForm());
     setTab("board");
-    showToast("매치 기록이 중앙 서버에 저장됐어요");
+    showToast("매치 기록이 Supabase DB에 저장됐어요");
   };
 
   const deleteMatch = async (id) => {
@@ -238,7 +253,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="wrap"><style>{CSS}</style><div className="loading">클라우드 기록실 원격 연결 중…</div></div>
+      <div className="wrap"><style>{CSS}</style><div className="loading">Supabase 클라우드 기록실 연결 중…</div></div>
     );
   }
 
@@ -253,7 +268,7 @@ export default function App() {
           <circle cx="100" cy="60" r="3" fill="rgba(255,255,255,.14)" />
         </svg>
         <div className="head-inner">
-          <div className="eyebrow">헌강자 FC · 실시간 클라우드</div>
+          <div className="eyebrow">헌강자 FC · Supabase DB 연동형</div>
           <h1>팀 기록실</h1>
           <div className="record-strip">
             <div className="rec"><span className="num">{teamRecord.matchDays}</span><span className="lab">매치</span></div>
@@ -306,7 +321,7 @@ export default function App() {
               </tbody>
             </table>
           </div>
-          <p className="note">어떤 기기에서 접속하든 실시간으로 실시간 연동 및 공유됩니다.</p>
+          <p className="note">Supabase 원격 데이터베이스에 안전하게 동기화 중입니다.</p>
 
           <div className="add-player">
             <input value={newPlayer} onChange={(e) => setNewPlayer(e.target.value)} placeholder="새 선수 이름"
@@ -386,12 +401,6 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              {formGames.length > 0 && goalSum > ourTotal && (
-                <div className="hint warn">개인 득점 합({goalSum})이 팀 총득점({ourTotal})보다 많아요. 확인해 주세요.</div>
-              )}
-              {formGames.length > 0 && goalSum < ourTotal && (
-                <div className="hint">개인 득점 합 {goalSum} / 팀 총득점 {ourTotal} — 차이는 용병·자책골 득점으로 간주돼요.</div>
-              )}
             </>
           )}
 
@@ -409,7 +418,7 @@ export default function App() {
             <div className="log-score"><span className="base-tag">이월</span><span className="opp">18매치 · 80게임 · 25승 20무 35패 · 득실 74:87</span></div>
           </div>
           {data.matches.length === 0 && (
-            <div className="empty">중앙 클라우드에 기록된 매치가 아직 없어요.<br /><b>매치 입력</b> 탭에서 경기를 등록해 보세요.</div>
+            <div className="empty">Supabase에 기록된 매치가 아직 없어요.<br /><b>매치 입력</b> 탭에서 경기를 등록해 보세요.</div>
           )}
           <div className="log-list">
             {[...data.matches].reverse().map((m) => (
@@ -457,18 +466,13 @@ export default function App() {
 }
 
 const CSS = `
-/* (CSS 코드는 이전 스타일과 완전히 일치하여 동일하게 유지됩니다.) */
 :root {
   --pitch: #0E3B2E; --pitch-2: #17573F; --chalk: #F4F6F1; --card: #FFFFFF;
   --ink: #16241D; --ink-2: #5A6B61; --line: #DDE5DC; --gold: #D9A419;
   --win: #1E7A4F; --loss: #C4453A; --draw: #7A8580;
 }
 * { box-sizing: border-box; }
-.wrap {
-  min-height: 100vh; background: var(--chalk); color: var(--ink);
-  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Noto Sans KR", "Malgun Gothic", sans-serif;
-  padding-bottom: 64px; max-width: 860px; margin: 0 auto;
-}
+.wrap { min-height: 100vh; background: var(--chalk); color: var(--ink); font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", sans-serif; padding-bottom: 64px; max-width: 860px; margin: 0 auto; }
 .loading { padding: 80px 0; text-align: center; color: var(--ink-2); }
 .board-head { position: relative; background: linear-gradient(160deg, var(--pitch) 0%, var(--pitch-2) 100%); color: #fff; padding: 26px 20px 22px; overflow: hidden; border-radius: 0 0 18px 18px; }
 .pitch-mark { position: absolute; right: -30px; top: -14px; width: 220px; height: 150px; pointer-events: none; }
@@ -477,85 +481,68 @@ const CSS = `
 .board-head h1 { margin: 0 0 16px; font-size: 22px; font-weight: 800; letter-spacing: -.01em; }
 .record-strip { display: flex; gap: 20px; flex-wrap: wrap; }
 .rec { display: flex; flex-direction: column; }
-.rec .num { font-variant-numeric: tabular-nums; font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 19px; font-weight: 700; letter-spacing: .02em; }
+.rec .num { font-variant-numeric: tabular-nums; font-family: monospace; font-size: 19px; font-weight: 700; }
 .rec .lab { font-size: 11px; opacity: .7; margin-top: 2px; }
 .tabs { display: flex; gap: 6px; padding: 14px 16px 10px; position: sticky; top: 0; background: var(--chalk); z-index: 5; }
 .tab { flex: 1; padding: 10px 0; border: 1px solid var(--line); background: var(--card); border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--ink-2); cursor: pointer; }
 .tab.on { background: var(--pitch); border-color: var(--pitch); color: #fff; }
 section { padding: 8px 16px 0; }
-.empty { background: var(--card); border: 1px dashed var(--line); border-radius: 12px; padding: 26px 16px; text-align: center; color: var(--ink-2); font-size: 14px; line-height: 1.7; margin-bottom: 14px; }
-.empty b { color: var(--ink); }
+.empty { background: var(--card); border: 1px dashed var(--line); border-radius: 12px; padding: 26px 16px; text-align: center; color: var(--ink-2); font-size: 14px; line-height: 1.7; }
 .note { font-size: 12.5px; color: var(--ink-2); line-height: 1.6; margin: 10px 2px; }
 .table-scroll { overflow-x: auto; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
 table { border-collapse: collapse; width: 100%; min-width: 640px; font-size: 13.5px; }
 th, td { padding: 9px 10px; text-align: center; white-space: nowrap; }
-thead th { background: var(--card); border-bottom: 2px solid var(--pitch); font-size: 12px; color: var(--ink-2); font-weight: 700; user-select: none; }
+thead th { background: var(--card); border-bottom: 2px solid var(--pitch); font-size: 12px; color: var(--ink-2); font-weight: 700; }
 th.click { cursor: pointer; }
 tbody tr { border-bottom: 1px solid var(--line); }
-tbody tr:last-child { border-bottom: none; }
 tbody tr:nth-child(-n+3) .rank-col { color: var(--gold); font-weight: 800; }
-td { font-variant-numeric: tabular-nums; }
 td.strong { font-weight: 800; }
 .rank-col { width: 34px; color: var(--ink-2); }
-.name-col { text-align: left; position: sticky; left: 0; background: var(--card); font-weight: 600; min-width: 84px; }
-thead .name-col { z-index: 2; }
+.name-col { text-align: left; position: sticky; left: 0; background: var(--card); font-weight: 600; }
 .add-player { display: flex; gap: 8px; margin: 6px 0 14px; }
-.add-player input { flex: 1; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; background: var(--card); }
-.add-player button { padding: 10px 16px; border: none; border-radius: 10px; background: var(--pitch); color: #fff; font-weight: 700; font-size: 14px; cursor: pointer; }
+.add-player input { flex: 1; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 14px; }
+.add-player button { padding: 10px 16px; border: none; border-radius: 10px; background: var(--pitch); color: #fff; font-weight: 700; cursor: pointer; }
 .form { display: flex; flex-direction: column; }
 .field-row { display: flex; gap: 10px; }
 .field { flex: 1; display: flex; flex-direction: column; gap: 5px; }
-.field span { font-size: 12px; color: var(--ink-2); font-weight: 600; }
-.field input { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 15px; background: var(--card); width: 100%; }
+.field span { font-size: 12px; color: var(--ink-2); }
+.field input { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 15px; }
 .games-box { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; }
 .game-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
-.game-idx { width: 18px; font-size: 12px; color: var(--ink-2); font-weight: 700; }
-.game-row input { width: 64px; padding: 9px 6px; border: 1px solid var(--line); border-radius: 10px; font-size: 18px; text-align: center; font-weight: 800; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-.game-row .colon { font-weight: 800; color: var(--ink-2); }
-.g { font-size: 11px; font-weight: 800; color: #fff; border-radius: 6px; padding: 3px 7px; margin-right: 3px; font-variant-numeric: tabular-nums; }
+.game-row input { width: 64px; padding: 9px 6px; border: 1px solid var(--line); border-radius: 10px; font-size: 18px; text-align: center; font-weight: 800; }
+.g { font-size: 11px; font-weight: 800; color: #fff; border-radius: 6px; padding: 3px 7px; }
 .g.win { background: var(--win); } .g.draw { background: var(--draw); } .g.loss { background: var(--loss); }
-.game-del { margin-left: auto; width: 28px; height: 28px; border: 1px solid var(--line); background: var(--chalk); border-radius: 8px; color: var(--loss); cursor: pointer; font-size: 14px; }
-.game-add { margin-top: 4px; width: 100%; padding: 9px; border: 1px dashed var(--line); background: none; border-radius: 10px; color: var(--pitch-2); font-weight: 700; font-size: 13.5px; cursor: pointer; }
-.section-label { margin: 20px 2px 8px; font-size: 14px; font-weight: 800; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.section-label .sub { font-size: 12px; color: var(--ink-2); font-weight: 500; }
-.section-label b { color: var(--pitch-2); }
-.roster-search { margin-left: auto; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; width: 110px; background: var(--card); }
+.game-del { margin-left: auto; width: 28px; height: 28px; border: 1px solid var(--line); background: var(--chalk); color: var(--loss); cursor: pointer; }
+.game-add { width: 100%; padding: 9px; border: 1px dashed var(--line); background: none; color: var(--pitch-2); font-weight: 700; cursor: pointer; }
+.section-label { margin: 20px 2px 8px; font-size: 14px; font-weight: 800; display: flex; align-items: center; gap: 8px; }
+.roster-search { margin-left: auto; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; width: 110px; }
 .chip-grid { display: flex; flex-wrap: wrap; gap: 7px; }
-.chip { padding: 8px 13px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); font-size: 13.5px; cursor: pointer; color: var(--ink); }
-.chip.on { background: var(--pitch); color: #fff; border-color: var(--pitch); font-weight: 700; }
+.chip { padding: 8px 13px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); font-size: 13.5px; cursor: pointer; }
+.chip.on { background: var(--pitch); color: #fff; font-weight: 700; }
 .stat-rows { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .stat-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
-.stat-row:last-child { border-bottom: none; }
-.stat-name { flex: 1; font-weight: 600; font-size: 14px; min-width: 0; }
-.mom { border: 1px solid var(--line); background: var(--card); color: #C9CFC9; border-radius: 8px; width: 32px; height: 32px; font-size: 16px; cursor: pointer; flex-shrink: 0; }
+.stat-name { flex: 1; font-weight: 600; font-size: 14px; }
+.mom { border: 1px solid var(--line); background: var(--card); color: #C9CFC9; border-radius: 8px; width: 32px; height: 32px; cursor: pointer; }
 .mom.on { color: #fff; background: var(--gold); border-color: var(--gold); }
-.stepper { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.stepper { display: flex; align-items: center; gap: 4px; }
 .st-lab { font-size: 11px; color: var(--ink-2); font-weight: 700; width: 12px; }
-.stepper button { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--chalk); font-size: 16px; cursor: pointer; color: var(--ink); }
-.st-val { width: 22px; text-align: center; font-weight: 800; font-variant-numeric: tabular-nums; }
-.hint { margin-top: 10px; font-size: 13px; color: var(--ink-2); background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
-.hint.warn { color: #8A3830; border-color: #E8C6C2; background: #FBF1F0; }
-.hint.good { color: #1E5C40; border-color: #C9E0D2; background: #EFF7F2; }
-.save { margin: 20px 0 10px; padding: 15px; border: none; border-radius: 12px; background: var(--pitch); color: #fff; font-size: 16px; font-weight: 800; cursor: pointer; }
+.stepper button { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: var(--chalk); cursor: pointer; }
+.st-val { width: 22px; text-align: center; font-weight: 800; }
+.hint { margin-top: 10px; font-size: 13px; color: var(--ink-2); background: var(--card); border: 1px solid var(--line); padding: 10px 12px; border-radius: 10px; }
+.save { width: 100%; margin: 20px 0 10px; padding: 15px; border: none; border-radius: 12px; background: var(--pitch); color: #fff; font-size: 16px; font-weight: 800; cursor: pointer; }
 .save:disabled { background: #B9C4BD; cursor: default; }
 .log-list { display: flex; flex-direction: column; gap: 10px; }
-.base-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; margin-bottom: 10px; background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--pitch); border-radius: 12px; }
-.base-tag { font-size: 11px; font-weight: 800; color: var(--pitch-2); border: 1px solid var(--pitch-2); border-radius: 6px; padding: 2px 7px; margin-right: 8px; }
+.base-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--pitch); border-radius: 12px; }
+.base-tag { font-size: 11px; font-weight: 800; color: var(--pitch-2); border: 1px solid var(--pitch-2); border-radius: 6px; padding: 2px 7px; }
 .log-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
-.log-head { width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: none; border: none; cursor: pointer; text-align: left; font-family: inherit; }
-.log-date { font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.log-score { display: flex; align-items: center; gap: 6px; flex: 1; flex-wrap: wrap; }
-.games-line { display: flex; gap: 4px; flex-wrap: wrap; }
+.log-head { width: 100%; display: flex; align-items: center padding: 12px 14px; background: none; border: none; cursor: pointer; text-align: left; }
+.log-date { font-size: 12.5px; color: var(--ink-2); }
+.log-score { display: flex; align-items: center; gap: 6px; flex: 1; }
+.games-line { display: flex; gap: 4px; }
 .opp { font-size: 13px; color: var(--ink-2); }
-.log-meta { font-size: 12px; color: var(--ink-2); white-space: nowrap; }
-.log-body { padding: 2px 14px 14px; font-size: 13.5px; line-height: 1.7; border-top: 1px solid var(--line); }
-.log-body p { margin: 8px 0; }
-.log-body b { color: var(--pitch-2); margin-right: 6px; }
-.del { margin-top: 6px; background: none; border: 1px solid var(--line); color: var(--loss); border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
-.del-confirm { margin-top: 8px; background: #FBF1F0; border: 1px solid #E8C6C2; border-radius: 10px; padding: 12px; font-size: 13px; color: #8A3830; }
-.del-confirm div { display: flex; gap: 8px; margin-top: 10px; }
-.del-confirm button { padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); cursor: pointer; font-size: 13px; }
-.del-confirm .danger { background: var(--loss); border-color: var(--loss); color: #fff; font-weight: 700; }
-.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; font-size: 14px; padding: 11px 18px; border-radius: 999px; z-index: 20; box-shadow: 0 6px 18px rgba(0,0,0,.2); }
-@media (max-width: 480px) { .field-row { flex-direction: column; } .record-strip { gap: 14px; } }
+.log-meta { font-size: 12px; color: var(--ink-2); }
+.log-body { padding: 2px 14px 14px; font-size: 13.5px; border-top: 1px solid var(--line); }
+.del { background: none; border: 1px solid var(--line); color: var(--loss); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 11px 18px; border-radius: 999px; box-shadow: 0 6px 18px rgba(0,0,0,.2); }
+@media (max-width: 480px) { .field-row { flex-direction: column; } }
 `;
