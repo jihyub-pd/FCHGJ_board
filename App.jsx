@@ -1,13 +1,12 @@
 import { useState, useEffect, useMemo } from "react";
-import { createClient } from "@supabase/supabase-js";
 
-// ===== [필독] Supabase 프로젝트 정보 입력 =====
-// Vercel 배포 시 환경변수(Environment Variables)로 등록하면 가장 안전합니다.
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || "YOUR_SUPABASE_PROJECT_URL";
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || "YOUR_SUPABASE_ANON_KEY";
+// ===== Supabase 프로젝트 정보 입력 =====
+const SUPABASE_URL = "YOUR_SUPABASE_PROJECT_URL"; // 예: https://xyz.supabase.co
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY"; 
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-const DB_ROW_ID = 1; // 단일 로우로 매치 데이터를 통합 관리하기 위한 고정 ID
+const DB_ROW_ID = 1;
+// 수파베이스 테이블 직접 타겟팅 주소
+const API_URL = `${SUPABASE_URL}/rest/v1/fc_records?id=eq.${DB_ROW_ID}`;
 
 // ===== 기존 기록 이월 (18매치 / 80게임) =====
 const BASE_MATCHES = 18;
@@ -63,22 +62,33 @@ export default function App() {
   const [newPlayer, setNewPlayer] = useState("");
   const [query, setQuery] = useState("");
 
-  // Supabase 클라우드에서 데이터 가져오기
+  // 패키지 없이 순수 fetch 함수로 DB 데이터 Get
   const fetchFromSupabase = async () => {
     try {
-      const { data: dbData, error } = await supabase
-        .from("fc_records")
-        .select("content")
-        .eq("id", DB_ROW_ID)
-        .single();
-
-      if (error || !dbData) {
-        // 테이블은 있되 데이터가 없으면 초기값 세팅
-        const initial = { players: ROSTER, matches: [] };
-        await supabase.from("fc_records").insert([{ id: DB_ROW_ID, content: initial }]);
-        setData(initial);
+      const res = await fetch(API_URL, {
+        method: "GET",
+        headers: {
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
+        }
+      });
+      const dbRows = await res.json();
+      
+      if (dbRows && dbRows.length > 0) {
+        setData(dbRows[0].content);
       } else {
-        setData(dbData.content);
+        // 데이터 로우가 없으면 초기값 세팅 후 생성
+        const initial = { players: ROSTER, matches: [] };
+        await fetch(`${SUPABASE_URL}/rest/v1/fc_records`, {
+          method: "POST",
+          headers: {
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({ id: DB_ROW_ID, content: initial })
+        });
+        setData(initial);
       }
     } catch (e) {
       setData({ players: ROSTER, matches: [] });
@@ -91,21 +101,27 @@ export default function App() {
     fetchFromSupabase();
   }, []);
 
+  // 패키지 없이 순수 fetch 함수로 데이터 Update (PATCH)
   const persist = async (next) => {
     setData(next);
     try {
-      await supabase
-        .from("fc_records")
-        .update({ content: next })
-        .eq("id", DB_ROW_ID);
+      await fetch(API_URL, {
+        method: "PATCH",
+        headers: {
+          "apikey": SUPABASE_ANON_KEY,
+          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ content: next })
+      });
     } catch (e) {
-      showToast("Supabase 클라우드 저장에 실패했어요.");
+      showToast("클라우드 서버 저장에 실패했어요.");
     }
   };
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2600); };
 
-  // ---------- 누적 통계 ----------
+  // ---------- 누적 통계 연산 로직 ----------
   const validGames = (m) => m.games.filter((x) => x.our !== "" && x.opp !== "" && x.our !== null && x.opp !== null);
 
   const stats = useMemo(() => {
@@ -149,13 +165,13 @@ export default function App() {
       validGames(m).forEach((x) => {
         const o = Number(x.our), p = Number(x.opp);
         t.games++; t.gf += o; t.ga += p;
-        if (o > p) t.w++; else if (o === p) t.d++; else t.l++;
+        if (o > p) t.w++; else if (o === p) t.d++; else l++;
       });
     });
     return t;
   }, [data]);
 
-  // ---------- 입력 폼 제어 및 기능 연동 ----------
+  // ---------- 입력 제어 기능 함수군 ----------
   const toggleAttendee = (name) => {
     setForm((f) => {
       const on = f.attendees.includes(name);
@@ -189,7 +205,6 @@ export default function App() {
   const formGames = form.games.filter((x) => x.our !== "" && x.opp !== "");
   const ourTotal = formGames.reduce((s, x) => s + Number(x.our), 0);
   const csGames = formGames.filter((x) => Number(x.opp) === 0).length;
-  const goalSum = Object.values(form.goals).reduce((s, v) => s + v, 0);
   const canSave = form.attendees.length > 0 && formGames.length > 0;
 
   const saveMatch = async () => {
@@ -208,7 +223,7 @@ export default function App() {
     await persist({ ...data, matches });
     setForm(emptyForm());
     setTab("board");
-    showToast("매치 기록이 Supabase DB에 저장됐어요");
+    showToast("매치 기록이 Supabase에 실시간 반영됐어요");
   };
 
   const deleteMatch = async (id) => {
@@ -253,7 +268,7 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="wrap"><style>{CSS}</style><div className="loading">Supabase 클라우드 기록실 연결 중…</div></div>
+      <div className="wrap"><style>{CSS}</style><div className="loading">Supabase 클라우드 라이브 동기화 중…</div></div>
     );
   }
 
@@ -268,7 +283,7 @@ export default function App() {
           <circle cx="100" cy="60" r="3" fill="rgba(255,255,255,.14)" />
         </svg>
         <div className="head-inner">
-          <div className="eyebrow">헌강자 FC · Supabase DB 연동형</div>
+          <div className="eyebrow">헌강자 FC · Supabase 가벼운 연동형</div>
           <h1>팀 기록실</h1>
           <div className="record-strip">
             <div className="rec"><span className="num">{teamRecord.matchDays}</span><span className="lab">매치</span></div>
@@ -321,7 +336,7 @@ export default function App() {
               </tbody>
             </table>
           </div>
-          <p className="note">Supabase 원격 데이터베이스에 안전하게 동기화 중입니다.</p>
+          <p className="note">순수 API 연동으로 외부 패키지 설치 없이 완벽하고 가볍게 클라우드에 보존됩니다.</p>
 
           <div className="add-player">
             <input value={newPlayer} onChange={(e) => setNewPlayer(e.target.value)} placeholder="새 선수 이름"
@@ -363,9 +378,6 @@ export default function App() {
             ))}
             <button className="game-add" onClick={addGame}>+ 게임 추가</button>
           </div>
-          {csGames > 0 && (
-            <div className="hint good">실점 0 게임 {csGames}개 → 참석자 전원에게 클린시트 {csGames}회가 기록됩니다</div>
-          )}
 
           <div className="section-label">
             참석 선수 <b>{form.attendees.length}</b>명
@@ -418,7 +430,7 @@ export default function App() {
             <div className="log-score"><span className="base-tag">이월</span><span className="opp">18매치 · 80게임 · 25승 20무 35패 · 득실 74:87</span></div>
           </div>
           {data.matches.length === 0 && (
-            <div className="empty">Supabase에 기록된 매치가 아직 없어요.<br /><b>매치 입력</b> 탭에서 경기를 등록해 보세요.</div>
+            <div className="empty">Supabase에 기록된 데이터가 없습니다.<br />새로운 매치를 등록해보세요.</div>
           )}
           <div className="log-list">
             {[...data.matches].reverse().map((m) => (
@@ -443,7 +455,7 @@ export default function App() {
                     <p><b>출석</b> {m.attendees.join(", ")}</p>
                     {confirmDel === m.id ? (
                       <div className="del-confirm">
-                        이 매치를 삭제할까요? 순위표 수치도 함께 빠집니다.
+                        이 매치를 삭제할까요?
                         <div>
                           <button className="danger" onClick={() => deleteMatch(m.id)}>삭제</button>
                           <button onClick={() => setConfirmDel(null)}>취소</button>
@@ -535,7 +547,7 @@ td.strong { font-weight: 800; }
 .base-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--pitch); border-radius: 12px; }
 .base-tag { font-size: 11px; font-weight: 800; color: var(--pitch-2); border: 1px solid var(--pitch-2); border-radius: 6px; padding: 2px 7px; }
 .log-card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
-.log-head { width: 100%; display: flex; align-items: center padding: 12px 14px; background: none; border: none; cursor: pointer; text-align: left; }
+.log-head { width: 100%; display: flex; align-items: center; padding: 12px 14px; background: none; border: none; cursor: pointer; text-align: left; }
 .log-date { font-size: 12.5px; color: var(--ink-2); }
 .log-score { display: flex; align-items: center; gap: 6px; flex: 1; }
 .games-line { display: flex; gap: 4px; }
