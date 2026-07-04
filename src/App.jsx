@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
 
 // ===== Supabase 프로젝트 정보 입력 =====
-const SUPABASE_URL = "YOUR_SUPABASE_PROJECT_URL";
-const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY"; 
+const SUPABASE_URL = "https://ozhdfewlboheqpcvbqgz.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96aGRmZXdsYm9oZXFwY3ZicWd6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5NzUwMjksImV4cCI6MjA5ODU1MTAyOX0.X5-4JBMX94Y04PPb5zTQpsbLCk4GMAhRa6yNzhBhjuI"; 
 
 const DB_ROW_ID = 1;
 const API_URL = `${SUPABASE_URL}/rest/v1/fc_records?id=eq.${DB_ROW_ID}`;
