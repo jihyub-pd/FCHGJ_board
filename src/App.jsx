@@ -507,8 +507,12 @@ th, td { padding: 9px 10px; text-align: center; white-space: nowrap; }
 thead th { background: var(--card); border-bottom: 2px solid var(--pitch); font-size: 12px; color: var(--ink-2); font-weight: 700; }
 th.click { cursor: pointer; }
 tbody tr { border-bottom: 1px solid var(--line); }
-tbody tr:nth-child(-n+3) .rank-col { color: var(--gold); font-weight: 800; }
-td.strong { font-weight: 800; }
+tbody tr:nth-child(-n+3) .rank-col { 
+  font-weight: 800;
+  background: linear-gradient(to top, rgba(217, 164, 25, 0.4) 40%, transparent 40%); 
+  padding: 2px 6px;
+  border-radius: 4px;
+}
 .rank-col { width: 34px; color: var(--ink-2); }
 .name-col { text-align: left; position: sticky; left: 0; background: var(--card); font-weight: 600; }
 .add-player { display: flex; gap: 8px; margin: 6px 0 14px; }
