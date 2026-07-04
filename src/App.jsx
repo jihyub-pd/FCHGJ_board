@@ -1,14 +1,12 @@
 import { useState, useEffect, useMemo } from "react";
 
 // ===== Supabase 프로젝트 정보 입력 =====
-const SUPABASE_URL = "https://ozhdfewlboheqpcvbqgz.supabase.co/rest/v1/"; // 예: https://xyz.supabase.co
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96aGRmZXdsYm9oZXFwY3ZicWd6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5NzUwMjksImV4cCI6MjA5ODU1MTAyOX0.X5-4JBMX94Y04PPb5zTQpsbLCk4GMAhRa6yNzhBhjuI"; 
+const SUPABASE_URL = "YOUR_SUPABASE_PROJECT_URL";
+const SUPABASE_ANON_KEY = "YOUR_SUPABASE_ANON_KEY"; 
 
 const DB_ROW_ID = 1;
-// 수파베이스 테이블 직접 타겟팅 주소
 const API_URL = `${SUPABASE_URL}/rest/v1/fc_records?id=eq.${DB_ROW_ID}`;
 
-// ===== 기존 기록 이월 (18매치 / 80게임) =====
 const BASE_MATCHES = 18;
 const BASE_TEAM = { games: 80, w: 25, d: 20, l: 35, gf: 74, ga: 87 };
 const BASE = {
@@ -39,6 +37,11 @@ const ROSTER = [
 const todayStr = () => new Date().toISOString().slice(0, 10);
 const zero = () => ({ att: 0, g: 0, mom: 0, a: 0 });
 
+// 쿼터별 포메이션 기본 뼈대
+const initialQuarterStruct = () => ({
+  referee: "", ST: "", LM: "", CAM: "", RM: "", CM1: "", CM2: "", LB: "", CB1: "", CB2: "", RB: "", GK: ""
+});
+
 const emptyForm = () => ({
   date: todayStr(),
   opponent: "",
@@ -47,13 +50,21 @@ const emptyForm = () => ({
   goals: {},
   assists: {},
   mom: null,
+  // 1~4쿼터 포메이션 통합 객체
+  formations: { q1: initialQuarterStruct(), q2: initialQuarterStruct(), q3: initialQuarterStruct(), q4: initialQuarterStruct() }
 });
+
+const POS_LABELS = {
+  referee: "주심", ST: "ST", LM: "LM", CAM: "CAM", RM: "RM", CM1: "CM", CM2: "CM", LB: "LB", CB1: "CB", CB2: "CB", RB: "RB", GK: "GK"
+};
 
 export default function App() {
   const [data, setData] = useState(null); 
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("board");
   const [form, setForm] = useState(emptyForm());
+  const [formTab, setFormTab] = useState("q1"); // 매치 입력 내 쿼터별 전술판 탭 제어
+  const [logTab, setLogTab] = useState({}); // 로그 내 쿼터 보기 토글용
   const [sortKey, setSortKey] = useState("points");
   const [sortDir, setSortDir] = useState(-1);
   const [toast, setToast] = useState("");
@@ -62,30 +73,20 @@ export default function App() {
   const [newPlayer, setNewPlayer] = useState("");
   const [query, setQuery] = useState("");
 
-  // 패키지 없이 순수 fetch 함수로 DB 데이터 Get
   const fetchFromSupabase = async () => {
     try {
       const res = await fetch(API_URL, {
         method: "GET",
-        headers: {
-          "apikey": SUPABASE_ANON_KEY,
-          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`
-        }
+        headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}` }
       });
       const dbRows = await res.json();
-      
       if (dbRows && dbRows.length > 0) {
         setData(dbRows[0].content);
       } else {
-        // 데이터 로우가 없으면 초기값 세팅 후 생성
         const initial = { players: ROSTER, matches: [] };
         await fetch(`${SUPABASE_URL}/rest/v1/fc_records`, {
           method: "POST",
-          headers: {
-            "apikey": SUPABASE_ANON_KEY,
-            "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-            "Content-Type": "application/json"
-          },
+          headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" },
           body: JSON.stringify({ id: DB_ROW_ID, content: initial })
         });
         setData(initial);
@@ -97,31 +98,22 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    fetchFromSupabase();
-  }, []);
+  useEffect(() => { fetchFromSupabase(); }, []);
 
-  // 패키지 없이 순수 fetch 함수로 데이터 Update (PATCH)
   const persist = async (next) => {
     setData(next);
     try {
       await fetch(API_URL, {
         method: "PATCH",
-        headers: {
-          "apikey": SUPABASE_ANON_KEY,
-          "Authorization": `Bearer ${SUPABASE_ANON_KEY}`,
-          "Content-Type": "application/json"
-        },
+        headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": `Bearer ${SUPABASE_ANON_KEY}`, "Content-Type": "application/json" },
         body: JSON.stringify({ content: next })
       });
-    } catch (e) {
-      showToast("클라우드 서버 저장에 실패했어요.");
-    }
+    } catch (e) { showToast("클라우드 저장에 실패했습니다."); }
   };
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2600); };
 
-  // ---------- 누적 통계 연산 로직 ----------
+  // ---------- 통계 연산 ----------
   const validGames = (m) => m.games.filter((x) => x.our !== "" && x.opp !== "" && x.our !== null && x.opp !== null);
 
   const stats = useMemo(() => {
@@ -131,8 +123,7 @@ export default function App() {
       const b = BASE[name] || zero();
       let att = b.att, g = b.g, a = b.a, mom = b.mom, cs = 0;
       data.matches.forEach((m) => {
-        const present = m.attendees.includes(name);
-        if (present) {
+        if (m.attendees.includes(name)) {
           att++;
           cs += validGames(m).filter((x) => Number(x.opp) === 0).length;
         }
@@ -165,22 +156,45 @@ export default function App() {
       validGames(m).forEach((x) => {
         const o = Number(x.our), p = Number(x.opp);
         t.games++; t.gf += o; t.ga += p;
-        if (o > p) t.w++; else if (o === p) t.d++; else l++;
+        if (o > p) t.w++; else if (o === p) t.d++; else t.l++;
       });
     });
     return t;
   }, [data]);
 
-  // ---------- 입력 제어 기능 함수군 ----------
+  // ---------- 입력 제어 및 전술판 로직 ----------
   const toggleAttendee = (name) => {
     setForm((f) => {
       const on = f.attendees.includes(name);
       const attendees = on ? f.attendees.filter((n) => n !== name) : [...f.attendees, name];
       const goals = { ...f.goals }, assists = { ...f.assists };
       let mom = f.mom;
-      if (on) { delete goals[name]; delete assists[name]; if (mom === name) mom = null; }
-      return { ...f, attendees, goals, assists, mom };
+      
+      const nextFormations = { ...f.formations };
+      if (on) {
+        delete goals[name]; delete assists[name]; if (mom === name) mom = null;
+        // 출석 취소 시 포메이션에 배치되어 있던 이름 자동 삭제 처리
+        Object.keys(nextFormations).forEach((qKey) => {
+          Object.keys(nextFormations[qKey]).forEach((pos) => {
+            if (nextFormations[qKey][pos] === name) nextFormations[qKey][pos] = "";
+          });
+        });
+      }
+      return { ...f, attendees, goals, assists, mom, formations: nextFormations };
     });
+  };
+
+  const handlePositionChange = (qKey, pos, name) => {
+    setForm((f) => {
+      const updatedQuarter = { ...f.formations[qKey], [pos]: name };
+      return { ...f, formations: { ...f.formations, [qKey]: updatedQuarter } };
+    });
+  };
+
+  // 현재 쿼터에서 선수가 대기 명단에 있는지 판별
+  const getSubstitutes = (qKey) => {
+    const currentAllocated = Object.values(form.formations[qKey]);
+    return form.attendees.filter(name => !currentAllocated.includes(name) || name === "");
   };
 
   const step = (field, name, delta) => {
@@ -203,8 +217,6 @@ export default function App() {
   const removeGame = (i) => setForm((f) => ({ ...f, games: f.games.filter((_, j) => j !== i) }));
 
   const formGames = form.games.filter((x) => x.our !== "" && x.opp !== "");
-  const ourTotal = formGames.reduce((s, x) => s + Number(x.our), 0);
-  const csGames = formGames.filter((x) => Number(x.opp) === 0).length;
   const canSave = form.attendees.length > 0 && formGames.length > 0;
 
   const saveMatch = async () => {
@@ -218,12 +230,13 @@ export default function App() {
       goals: { ...form.goals },
       assists: { ...form.assists },
       mom: form.mom,
+      formations: form.formations // 쿼터 전술 정보 세이브
     };
     const matches = [...data.matches, match].sort((a, b) => a.date.localeCompare(b.date));
     await persist({ ...data, matches });
     setForm(emptyForm());
     setTab("board");
-    showToast("매치 기록이 Supabase에 실시간 반영됐어요");
+    showToast("매치와 쿼터 전술이 Supabase에 안전하게 저장됐어요");
   };
 
   const deleteMatch = async (id) => {
@@ -264,6 +277,134 @@ export default function App() {
     return `${w}승 ${d}무 ${l}패`;
   };
 
+  // 포메이션 전술판 렌더링용 컴포넌트 내부 함수
+  const renderTacticalBoard = (qKey, isReadOnly = false, matchLogData = null) => {
+    const targetFormations = isReadOnly ? matchLogData.formations?.[qKey] : form.formations[qKey];
+    if (!targetFormations) return <div className="no-pitch">이 매치는 전술판 데이터가 없습니다.</div>;
+
+    // 대기 명단 계산
+    const allocatedNames = Object.values(targetFormations);
+    const attendeesList = isReadOnly ? matchLogData.attendees : form.attendees;
+    const waitingList = attendeesList.filter(name => !allocatedNames.includes(name) && name !== "");
+
+    const renderSelector = (pos) => {
+      const currentVal = targetFormations[pos] || "";
+      if (isReadOnly) {
+        return <div className="pos-read-val">{currentVal || "-"}</div>;
+      }
+      return (
+        <select 
+          value={currentVal} 
+          onChange={(e) => handlePositionChange(qKey, pos, e.target.value)}
+          className="pos-select"
+        >
+          <option value="">선택</option>
+          {form.attendees.map(name => {
+            // 미선택 상태거나, 본인이 이미 잡은 칸 외의 칸에 중복으로 들어가는 것 방지
+            const isAllocatedElsewhere = allocatedNames.includes(name) && currentVal !== name;
+            return (
+              <option key={name} value={name} disabled={isAllocatedElsewhere && name !== ""}>
+                {name}
+              </option>
+            );
+          })}
+        </select>
+      );
+    };
+
+    return (
+      <div className="pitch-container">
+        {/* 주심 및 대기 명단 레이아웃 */}
+        <div className="pitch-top-bar">
+          <div className="top-bar-box">
+            <div className="bar-label header-gray">주심</div>
+            <div className="bar-value">
+              {isReadOnly ? (targetFormations.referee || "-") : (
+                <select value={targetFormations.referee || ""} onChange={(e) => handlePositionChange(qKey, "referee", e.target.value)} className="pos-select font-small">
+                  <option value="">선택</option>
+                  {form.attendees.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              )}
+            </div>
+          </div>
+          <div className="top-bar-box flex-grow">
+            <div className="bar-label header-gray">대기</div>
+            <div className="bar-value text-left font-subtle-box">
+              {waitingList.length > 0 ? waitingList.join(", ") : "대기 선수 없음"}
+            </div>
+          </div>
+        </div>
+
+        {/* 메인 경기장 포메이션 보드 */}
+        <div className="pitch-board">
+          {/* ST 라인 */}
+          <div className="pitch-row row-center">
+            <div className="pos-node border-blue">
+              <span className="pos-tag text-blue">ST</span>
+              {renderSelector("ST")}
+            </div>
+          </div>
+
+          {/* 미드필더 2선 라인 */}
+          <div className="pitch-row row-space-between">
+            <div className="pos-node border-green">
+              <span className="pos-tag text-green">LM</span>
+              {renderSelector("LM")}
+            </div>
+            <div className="pos-node border-green">
+              <span className="pos-tag text-green">CAM</span>
+              {renderSelector("CAM")}
+            </div>
+            <div className="pos-node border-green">
+              <span className="pos-tag text-green">RM</span>
+              {renderSelector("RM")}
+            </div>
+          </div>
+
+          {/* 3선 CM 중앙 수비형 라인 */}
+          <div className="pitch-row row-double-center">
+            <div className="pos-node border-green">
+              <span className="pos-tag text-green">CM</span>
+              {renderSelector("CM1")}
+            </div>
+            <div className="pos-node border-green">
+              <span className="pos-tag text-green">CM</span>
+              {renderSelector("CM2")}
+            </div>
+          </div>
+
+          {/* 수비 4선 백라인 */}
+          <div className="pitch-row row-space-between">
+            <div className="pos-node border-orange">
+              <span className="pos-tag text-orange">LB</span>
+              {renderSelector("LB")}
+            </div>
+            <div className="pos-node border-orange">
+              <span className="pos-tag text-orange">CB</span>
+              {renderSelector("CB1")}
+            </div>
+            <div className="pos-node border-orange">
+              <span className="pos-tag text-orange">CB</span>
+              {renderSelector("CB2")}
+            </div>
+            <div className="pos-node border-orange">
+              <span className="pos-tag text-orange">RB</span>
+              {renderSelector("RB")}
+            </div>
+          </div>
+
+          {/* GK 골키퍼 */}
+          <div className="pitch-row row-center">
+            <div className="pos-node border-gray">
+              <span className="pos-tag text-gray">GK</span>
+              {renderSelector("GK")}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   const filteredRoster = data ? data.players.filter((n) => n.includes(query.trim())) : [];
 
   if (loading) {
@@ -280,10 +421,9 @@ export default function App() {
         <svg className="pitch-mark" viewBox="0 0 200 120" aria-hidden="true">
           <circle cx="100" cy="60" r="42" fill="none" stroke="rgba(255,255,255,.14)" strokeWidth="2" />
           <line x1="100" y1="0" x2="100" y2="120" stroke="rgba(255,255,255,.14)" strokeWidth="2" />
-          <circle cx="100" cy="60" r="3" fill="rgba(255,255,255,.14)" />
         </svg>
         <div className="head-inner">
-          <div className="eyebrow">헌강자 FC · Supabase 가벼운 연동형</div>
+          <div className="eyebrow">헌강자 FC · 실시간 통합 기록실</div>
           <h1>팀 기록실</h1>
           <div className="record-strip">
             <div className="rec"><span className="num">{teamRecord.matchDays}</span><span className="lab">매치</span></div>
@@ -336,7 +476,7 @@ export default function App() {
               </tbody>
             </table>
           </div>
-          <p className="note">순수 API 연동으로 외부 패키지 설치 없이 완벽하고 가볍게 클라우드에 보존됩니다.</p>
+          <p className="note">Supabase 클라우드 원격 DB 저장소에 안전하게 연동 및 보존되는 실시간 순위표입니다.</p>
 
           <div className="add-player">
             <input value={newPlayer} onChange={(e) => setNewPlayer(e.target.value)} placeholder="새 선수 이름"
@@ -389,6 +529,19 @@ export default function App() {
             ))}
           </div>
 
+          {/* 쿼터별 포메이션 전술판 전용 배치 탭 영역 */}
+          <div className="section-label">당일 쿼터별 라인업 전술판</div>
+          <div className="quarter-nav-tabs">
+            {["q1", "q2", "q3", "q4"].map((q) => (
+              <button key={q} type="button" className={formTab === q ? "q-nav-btn activated" : "q-nav-btn"} onClick={() => setFormTab(q)}>
+                {q === "q1" ? "1쿼터" : q === "q2" ? "2쿼터" : q === "q3" ? "3쿼터" : "4쿼터"}
+              </button>
+            ))}
+          </div>
+          <div className="quarter-board-wrapper">
+            {renderTacticalBoard(formTab, false)}
+          </div>
+
           {form.attendees.length > 0 && (
             <>
               <div className="section-label">기록 입력 <span className="sub">득점 · 도움 · MOM(★는 1명)</span></div>
@@ -400,15 +553,15 @@ export default function App() {
                     <div className="stat-name">{n}</div>
                     <div className="stepper">
                       <span className="st-lab">G</span>
-                      <button onClick={() => step("goals", n, -1)}>−</button>
+                      <button type="button" onClick={() => step("goals", n, -1)}>−</button>
                       <span className="st-val">{form.goals[n] || 0}</span>
-                      <button onClick={() => step("goals", n, 1)}>+</button>
+                      <button type="button" onClick={() => step("goals", n, 1)}>+</button>
                     </div>
                     <div className="stepper">
                       <span className="st-lab">A</span>
-                      <button onClick={() => step("assists", n, -1)}>−</button>
+                      <button type="button" onClick={() => step("assists", n, -1)}>−</button>
                       <span className="st-val">{form.assists[n] || 0}</span>
-                      <button onClick={() => step("assists", n, 1)}>+</button>
+                      <button type="button" onClick={() => step("assists", n, 1)}>+</button>
                     </div>
                   </div>
                 ))}
@@ -417,7 +570,7 @@ export default function App() {
           )}
 
           <button className="save" disabled={!canSave} onClick={saveMatch}>
-            {canSave ? "매치 기록 저장" : "게임 스코어와 참석 선수를 입력해 주세요"}
+            {canSave ? "매치 및 포메이션 기록 일괄 저장" : "게임 스코어와 참석 선수를 입력해 주세요"}
           </button>
         </section>
       )}
@@ -430,44 +583,68 @@ export default function App() {
             <div className="log-score"><span className="base-tag">이월</span><span className="opp">18매치 · 80게임 · 25승 20무 35패 · 득실 74:87</span></div>
           </div>
           {data.matches.length === 0 && (
-            <div className="empty">Supabase에 기록된 데이터가 없습니다.<br />새로운 매치를 등록해보세요.</div>
+            <div className="empty">Supabase에 저장된 기록이 아직 없습니다.</div>
           )}
           <div className="log-list">
-            {[...data.matches].reverse().map((m) => (
-              <div className="log-card" key={m.id}>
-                <button className="log-head" onClick={() => setExpanded(expanded === m.id ? null : m.id)}>
-                  <div className="log-date">{m.date}</div>
-                  <div className="log-score">
-                    <span className="games-line">{validGames(m).map(gameBadge)}</span>
-                    {m.opponent && <span className="opp">vs {m.opponent}</span>}
-                  </div>
-                  <div className="log-meta">{matchSummary(m)} · {m.attendees.length}명</div>
-                </button>
-                {expanded === m.id && (
-                  <div className="log-body">
-                    {Object.keys(m.goals).length > 0 && (
-                      <p><b>득점</b> {Object.entries(m.goals).map(([n, c]) => (c > 1 ? `${n}(${c})` : n)).join(", ")}</p>
-                    )}
-                    {Object.keys(m.assists).length > 0 && (
-                      <p><b>도움</b> {Object.entries(m.assists).map(([n, c]) => (c > 1 ? `${n}(${c})` : n)).join(", ")}</p>
-                    )}
-                    {m.mom && <p><b>MOM</b> ★ {m.mom}</p>}
-                    <p><b>출석</b> {m.attendees.join(", ")}</p>
-                    {confirmDel === m.id ? (
-                      <div className="del-confirm">
-                        이 매치를 삭제할까요?
-                        <div>
-                          <button className="danger" onClick={() => deleteMatch(m.id)}>삭제</button>
-                          <button onClick={() => setConfirmDel(null)}>취소</button>
+            {[...data.matches].reverse().map((m) => {
+              const currentLogQuarter = logTab[m.id] || "q1";
+              return (
+                <div className="log-card" key={m.id}>
+                  <button className="log-head" onClick={() => setExpanded(expanded === m.id ? null : m.id)}>
+                    <div className="log-date">{m.date}</div>
+                    <div className="log-score">
+                      <span className="games-line">{validGames(m).map(gameBadge)}</span>
+                      {m.opponent && <span className="opp">vs {m.opponent}</span>}
+                    </div>
+                    <div className="log-meta">{matchSummary(m)} · {m.attendees.length}명</div>
+                  </button>
+                  {expanded === m.id && (
+                    <div className="log-body">
+                      {Object.keys(m.goals).length > 0 && (
+                        <p><b>득점</b> {Object.entries(m.goals).map(([n, c]) => (c > 1 ? `${n}(${c})` : n)).join(", ")}</p>
+                      )}
+                      {Object.keys(m.assists).length > 0 && (
+                        <p><b>도움</b> {Object.entries(m.assists).map(([n, c]) => (c > 1 ? `${n}(${c})` : n)).join(", ")}</p>
+                      )}
+                      {m.mom && <p><b>MOM</b> ★ {m.mom}</p>}
+                      <p><b>출석</b> {m.attendees.join(", ")}</p>
+                      
+                      {/* 로그 상세보기 내부 쿼터 포메이션 라인업 확인용 */}
+                      <div className="log-formation-section">
+                        <div className="section-label sub-title">당일 매치 쿼터별 라인업 기록</div>
+                        <div className="quarter-nav-tabs">
+                          {["q1", "q2", "q3", "q4"].map((q) => (
+                            <button 
+                              key={q} 
+                              type="button" 
+                              className={currentLogQuarter === q ? "q-nav-btn activated" : "q-nav-btn"} 
+                              onClick={() => setLogTab({ ...logTab, [m.id]: q })}
+                            >
+                              {q === "q1" ? "1쿼터" : q === "q2" ? "2쿼터" : q === "q3" ? "3쿼터" : "4쿼터"}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="quarter-board-wrapper">
+                          {renderTacticalBoard(currentLogQuarter, true, m)}
                         </div>
                       </div>
-                    ) : (
-                      <button className="del" onClick={() => setConfirmDel(m.id)}>매치 삭제</button>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
+
+                      {confirmDel === m.id ? (
+                        <div className="del-confirm">
+                          이 매치를 삭제할까요?
+                          <div>
+                            <button className="danger" onClick={() => deleteMatch(m.id)}>삭제</button>
+                            <button onClick={() => setConfirmDel(null)}>취소</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button className="del" onClick={() => setConfirmDel(m.id)}>매치 삭제</button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
@@ -507,12 +684,16 @@ th, td { padding: 9px 10px; text-align: center; white-space: nowrap; }
 thead th { background: var(--card); border-bottom: 2px solid var(--pitch); font-size: 12px; color: var(--ink-2); font-weight: 700; }
 th.click { cursor: pointer; }
 tbody tr { border-bottom: 1px solid var(--line); }
+
+/* 1,2,3위 형광펜 하이라이트 이펙트 */
 tbody tr:nth-child(-n+3) .rank-col { 
   font-weight: 800;
-  background: linear-gradient(to top, rgba(217, 164, 25, 0.4) 40%, transparent 40%); 
+  background: linear-gradient(to top, rgba(217, 164, 25, 0.35) 45%, transparent 45%); 
   padding: 2px 6px;
   border-radius: 4px;
 }
+
+td.strong { font-weight: 800; }
 .rank-col { width: 34px; color: var(--ink-2); }
 .name-col { text-align: left; position: sticky; left: 0; background: var(--card); font-weight: 600; }
 .add-player { display: flex; gap: 8px; margin: 6px 0 14px; }
@@ -531,10 +712,53 @@ tbody tr:nth-child(-n+3) .rank-col {
 .game-del { margin-left: auto; width: 28px; height: 28px; border: 1px solid var(--line); background: var(--chalk); color: var(--loss); cursor: pointer; }
 .game-add { width: 100%; padding: 9px; border: 1px dashed var(--line); background: none; color: var(--pitch-2); font-weight: 700; cursor: pointer; }
 .section-label { margin: 20px 2px 8px; font-size: 14px; font-weight: 800; display: flex; align-items: center; gap: 8px; }
+.section-label.sub-title { margin-top: 14px; font-size: 13px; color: var(--pitch); }
 .roster-search { margin-left: auto; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; width: 110px; }
 .chip-grid { display: flex; flex-wrap: wrap; gap: 7px; }
 .chip { padding: 8px 13px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); font-size: 13.5px; cursor: pointer; }
 .chip.on { background: var(--pitch); color: #fff; font-weight: 700; }
+
+/* ─── 축구장 전술판 확장 인터페이스 스타일 ─── */
+.quarter-nav-tabs { display: flex; gap: 4px; margin-bottom: 8px; background: #E9ECE9; padding: 4px; border-radius: 8px; }
+.q-nav-btn { flex: 1; padding: 8px 0; border: none; background: transparent; font-size: 13px; font-weight: 600; color: var(--ink-2); cursor: pointer; border-radius: 6px; }
+.q-nav-btn.activated { background: var(--card); color: var(--pitch); box-shadow: 0 2px 6px rgba(0,0,0,0.08); font-weight: 800; }
+.quarter-board-wrapper { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-bottom: 14px; }
+
+.pitch-container { display: flex; flex-direction: column; gap: 12px; width: 100%; }
+.pitch-top-bar { display: flex; gap: 8px; }
+.top-bar-box { display: flex; border: 1px solid #C9D1C9; border-radius: 6px; overflow: hidden; height: 34px; align-items: center; background: #FAFAFA; }
+.flex-grow { flex: 1; }
+.bar-label { width: 54px; height: 100%; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; border-right: 1px solid #C9D1C9; color: var(--ink-2); }
+.header-gray { background: #EDEDED; }
+.bar-value { flex: 1; padding: 0 8px; display: flex; align-items: center; height: 100%; font-size: 13px; }
+.font-subtle-box { font-size: 12.5px; color: var(--ink-2); line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 500px; }
+.text-left { text-align: left; justify-content: flex-start; }
+
+.pitch-board { border: 1px solid #B0B8B0; background: #FFFFFF; border-radius: 8px; padding: 16px 8px; display: flex; flex-direction: column; gap: 18px; position: relative; }
+.pitch-row { display: flex; width: 100%; }
+.row-center { justify-content: center; }
+.row-space-between { justify-content: space-between; padding: 0 12px; }
+.row-double-center { justify-content: center; gap: 40px; }
+
+.pos-node { display: flex; flex-direction: column; width: 84px; border: 1px solid #B0B8B0; border-radius: 6px; background: #FAFAFA; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.03); }
+.border-blue { border-color: #B2C8E6; }
+.border-green { border-color: #BCD9C5; }
+.border-orange { border-color: #EDD0C2; }
+.border-gray { border-color: #D6D6D6; }
+
+.pos-tag { font-size: 10px; font-weight: 800; text-align: center; padding: 2px 0; letter-spacing: 0.05em; border-bottom: 1px solid #EAEAEA; }
+.text-blue { background: #E1ECFA; color: #2B5B84; }
+.text-green { background: #E2F2E7; color: #2A663B; }
+.text-orange { background: #FCECE4; color: #8A4B2D; }
+.text-gray { background: #EDEDED; color: #555555; }
+
+.pos-select { width: 100%; border: none; background: transparent; font-size: 12px; padding: 4px 2px; text-align: center; font-weight: 600; color: var(--ink); cursor: pointer; outline: none; -webkit-appearance: none; -moz-appearance: none; appearance: none; text-align-last: center; }
+.font-small { font-size: 11.5px; padding: 2px; }
+.pos-read-val { width: 100%; font-size: 12px; font-weight: 700; color: var(--ink); padding: 5px 0; text-align: center; background: #FFF; }
+.no-pitch { padding: 20px; text-align: center; color: var(--ink-2); font-size: 13px; }
+.log-formation-section { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 6px; }
+
+/* ─────────────────────────────────────── */
 .stat-rows { background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .stat-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
 .stat-name { flex: 1; font-weight: 600; font-size: 14px; }
@@ -558,7 +782,7 @@ tbody tr:nth-child(-n+3) .rank-col {
 .opp { font-size: 13px; color: var(--ink-2); }
 .log-meta { font-size: 12px; color: var(--ink-2); }
 .log-body { padding: 2px 14px 14px; font-size: 13.5px; border-top: 1px solid var(--line); }
-.del { background: none; border: 1px solid var(--line); color: var(--loss); border-radius: 8px; padding: 7px 12px; cursor: pointer; }
+.del { background: none; border: 1px solid var(--line); color: var(--loss); border-radius: 8px; padding: 7px 12px; cursor: pointer; margin-top: 10px; }
 .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 11px 18px; border-radius: 999px; box-shadow: 0 6px 18px rgba(0,0,0,.2); }
 @media (max-width: 480px) { .field-row { flex-direction: column; } }
 `;
