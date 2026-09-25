@@ -127,6 +127,8 @@ export default function App() {
   const [expanded, setExpanded] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [newPlayer, setNewPlayer] = useState("");
+  const [manage, setManage] = useState(false);      // 선수 관리 펼침
+  const [confirmRemove, setConfirmRemove] = useState(null);
   const [query, setQuery] = useState("");
   const [sheet, setSheet] = useState(null); // 구글 시트 기록
 
@@ -195,6 +197,9 @@ export default function App() {
   // ---------- 통계 연산 ----------
   const validGames = (m) => m.games.filter((x) => x.our !== "" && x.opp !== "" && x.our !== null && x.opp !== null);
 
+  // 삭제(숨김) 처리된 선수 — 시트에 이름이 남아 있어도 앱에서는 보이지 않음
+  const hidden = useMemo(() => new Set((data && data.hidden) || []), [data]);
+
   // 앱에 입력된 매치에서 계산한 클린시트 (시트에 값이 없을 때 사용)
   const appCleanSheets = (name) => (data ? data.matches.reduce((sum, m) =>
     sum + (m.attendees.includes(name) ? validGames(m).filter((x) => Number(x.opp) === 0).length : 0), 0) : 0);
@@ -213,11 +218,11 @@ export default function App() {
       const inSheet = new Set(fromSheet.map((p) => p.name));
       const extra = data.players.filter((n) => !inSheet.has(n))
         .map((name) => ({ name, att: 0, g: 0, a: 0, mom: 0, cs: 0, points: 0, rate: 0 }));
-      return [...fromSheet, ...extra];
+      return [...fromSheet, ...extra].filter((p) => !hidden.has(p.name));
     }
     // 2) 시트를 못 읽었을 때: 기존 방식 (기본 기록 + 앱 입력 매치)
     const totalMatches = BASE_MATCHES + data.matches.length;
-    return data.players.map((name) => {
+    return data.players.filter((n) => !hidden.has(n)).map((name) => {
       const b = BASE[name] || zero();
       let att = b.att, g = b.g, a = b.a, mom = b.mom, cs = 0;
       data.matches.forEach((m) => {
@@ -231,7 +236,7 @@ export default function App() {
       });
       return { name, att, g, a, mom, cs, points: g + a, rate: totalMatches ? Math.round((att / totalMatches) * 100) : 0 };
     });
-  }, [data, sheet]);
+  }, [data, sheet, hidden]);
 
   const sorted = useMemo(() => {
     const arr = [...stats];
@@ -350,11 +355,27 @@ export default function App() {
   const addPlayer = async () => {
     const name = newPlayer.trim();
     if (!name) return;
-    if (data.players.includes(name)) { showToast("이미 명단에 있는 이름이에요"); return; }
-    const ok = await saveChange((d) => ({ ...d, players: d.players.includes(name) ? d.players : [...d.players, name] }));
+    const wasHidden = hidden.has(name);
+    if (!wasHidden && stats.some((p) => p.name === name)) { showToast("이미 명단에 있는 이름이에요"); return; }
+    const ok = await saveChange((d) => ({
+      ...d,
+      players: d.players.includes(name) ? d.players : [...d.players, name],
+      hidden: (d.hidden || []).filter((n) => n !== name)
+    }));
     if (!ok) return;
     setNewPlayer("");
-    showToast(`${name} 선수를 명단에 추가했어요`);
+    showToast(wasHidden ? `${name} 선수를 명단에 다시 넣었어요` : `${name} 선수를 명단에 추가했어요`);
+  };
+
+  const removePlayer = async (name) => {
+    const ok = await saveChange((d) => ({
+      ...d,
+      players: d.players.filter((n) => n !== name),
+      hidden: [...new Set([...(d.hidden || []), name])]
+    }));
+    setConfirmRemove(null);
+    if (!ok) return;
+    showToast(`${name} 선수를 명단에서 뺐어요`);
   };
 
   const arrow = (k) => (sortKey === k ? (sortDir === -1 ? " ▾" : " ▴") : "");
@@ -507,7 +528,7 @@ export default function App() {
     );
   };
 
-  const allPlayers = data ? [...new Set([...(sheet ? sheet.players.map((p) => p.name) : []), ...data.players])] : [];
+  const allPlayers = data ? [...new Set([...(sheet ? sheet.players.map((p) => p.name) : []), ...data.players])].filter((n) => !hidden.has(n)) : [];
   const filteredRoster = allPlayers.filter((n) => n.includes(query.trim()));
 
   if (loading) {
@@ -595,10 +616,36 @@ export default function App() {
           </div>
           <p className="note">{sheet ? "개인 기록은 팀 구글 시트 기준이며, 시트를 고치면 자동으로 반영돼요." : "시트를 불러오지 못해 앱에 입력된 기록으로 계산했어요."} 열 제목을 누르면 정렬돼요.</p>
 
-          <div className="add-player">
-            <input value={newPlayer} onChange={(e) => setNewPlayer(e.target.value)} placeholder="새 선수 이름"
-              onKeyDown={(e) => e.key === "Enter" && addPlayer()} />
-            <button onClick={addPlayer}>선수 추가</button>
+          <div className="manage">
+            <button className="manage-toggle" onClick={() => { setManage(!manage); setConfirmRemove(null); }} aria-expanded={manage}>
+              <span>선수 명단 관리</span><span className="manage-count">{stats.length}명 {manage ? "▴" : "▾"}</span>
+            </button>
+            {manage && (
+              <div className="manage-body">
+                <div className="add-player">
+                  <input value={newPlayer} onChange={(e) => setNewPlayer(e.target.value)} placeholder="새 선수 이름"
+                    onKeyDown={(e) => e.key === "Enter" && addPlayer()} />
+                  <button onClick={addPlayer}>추가</button>
+                </div>
+                <p className="manage-hint">이름 옆 ×를 누르면 명단에서 빠집니다. 지난 매치 기록에는 이름이 그대로 남아요.</p>
+                <div className="roster-list">
+                  {[...stats].sort((x, y) => x.name.localeCompare(y.name, "ko")).map((p) => (
+                    confirmRemove === p.name ? (
+                      <div className="roster-item confirm" key={p.name}>
+                        <span>{p.name} 삭제?</span>
+                        <button className="yes" onClick={() => removePlayer(p.name)}>삭제</button>
+                        <button className="no" onClick={() => setConfirmRemove(null)}>취소</button>
+                      </div>
+                    ) : (
+                      <div className="roster-item" key={p.name}>
+                        <span>{p.name}</span>
+                        <button className="x" aria-label={`${p.name} 삭제`} onClick={() => setConfirmRemove(p.name)}>×</button>
+                      </div>
+                    )
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </section>
       )}
@@ -843,7 +890,19 @@ td.strong { font-weight: 800; }
 td.mom-cell { color: var(--gold); font-weight: 700; }
 td.dim { color: var(--ink-3); }
 .note { font-size: 12.5px; color: var(--ink-2); margin: 10px 2px 0; line-height: 1.5; }
-.add-player { display: flex; gap: 8px; margin-top: 18px; }
+.manage { margin-top: 18px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; }
+.manage-toggle { width: 100%; display: flex; justify-content: space-between; align-items: center; border: 0; background: none; padding: 14px; font-size: 15px; font-weight: 700; }
+.manage-count { font-size: 13px; font-weight: 500; color: var(--ink-2); }
+.manage-body { padding: 0 14px 14px; border-top: 1px solid var(--line-2); }
+.manage-hint { font-size: 12.5px; color: var(--ink-2); margin: 10px 0; line-height: 1.5; }
+.roster-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.roster-item { display: inline-flex; align-items: center; gap: 2px; padding: 4px 4px 4px 12px; border: 1px solid var(--line); border-radius: 999px; font-size: 14px; background: var(--chalk); }
+.roster-item .x { border: 0; background: none; width: 28px; height: 28px; border-radius: 50%; color: var(--ink-3); font-size: 17px; line-height: 1; }
+.roster-item .x:active { background: var(--line); }
+.roster-item.confirm { background: var(--loss-soft); border-color: var(--loss-soft); gap: 6px; padding-right: 6px; }
+.roster-item.confirm button { border: 0; border-radius: 999px; padding: 4px 10px; font-size: 12.5px; font-weight: 600; background: var(--card); }
+.roster-item.confirm .yes { background: var(--loss); color: #fff; }
+.add-player { display: flex; gap: 8px; margin-top: 12px; }
 .add-player input { flex: 1; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 15px; }
 .add-player button { padding: 0 16px; border: 0; border-radius: 10px; background: var(--ink); color: #fff; font-weight: 600; font-size: 14px; }
 
