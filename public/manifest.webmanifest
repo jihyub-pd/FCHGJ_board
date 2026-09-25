@@ -1,0 +1,13 @@
+{
+  "name": "헌강자 FC 팀 기록실",
+  "short_name": "헌강자FC",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0F3B2C",
+  "theme_color": "#0F3B2C",
+  "lang": "ko",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
