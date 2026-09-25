@@ -1,0 +1,14 @@
+name: Supabase keep-alive
+# 무료 Supabase는 7일간 요청이 없으면 일시정지됩니다. 3일마다 한 번 조회해서 깨워 둡니다.
+on:
+  schedule:
+    - cron: "0 0 */3 * *"
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -fsS "https://ozhdfewlboheqpcvbqgz.supabase.co/rest/v1/fc_records?id=eq.1&select=id" \
+            -H "apikey: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im96aGRmZXdsYm9oZXFwY3ZicWd6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI5NzUwMjksImV4cCI6MjA5ODU1MTAyOX0.X5-4JBMX94Y04PPb5zTQpsbLCk4GMAhRa6yNzhBhjuI"
+ 
