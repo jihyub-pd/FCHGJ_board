@@ -130,13 +130,32 @@ const ytEmbed = (url) => {
     return `https://www.youtube-nocookie.com/embed/${id}${sec && sec !== "0" ? `?start=${sec}` : ""}`;
   } catch (e) { return null; }
 };
+// 여러 줄/공백으로 붙여 넣은 링크를 모두 뽑아냄
+const extractUrls = (text) => ((text || "").match(/https?:\/\/[^\s,]+/g) || []);
+// 새 영상 항목들 만들기: 여러 개면 이름 뒤에 번호, 이름이 없으면 '영상 N'
+const makeVideos = (text, label, startIndex = 0) => {
+  const urls = extractUrls(text);
+  const base = (label || "").trim();
+  return urls.map((url, i) => ({
+    id: "v" + Date.now().toString(36) + i,
+    url,
+    label: base ? (urls.length > 1 ? `${base} ${i + 1}` : base) : `영상 ${startIndex + i + 1}`
+  }));
+};
 const isUrl = (v) => { try { const u = new URL(v.trim()); return u.protocol === "https:" || u.protocol === "http:"; } catch (e) { return false; } };
 
-const emptySched = () => ({ date: todayStr(), time: "", endTime: "", opponent: "", place: "", memo: "" });
+const emptySched = () => ({ date: todayStr(), time: "", endTime: "", gather: "", uniform: "", opponent: "", place: "", memo: "" });
+
+// 유니폼 색 (빨강·검정·파랑)
+const UNIFORMS = [["빨강", "#C0392B"], ["검정", "#1A1A1A"], ["파랑", "#2F5FA8"]];
+const uniformColor = (u) => { const f = UNIFORMS.find(([n]) => (u || "").includes(n)); return f ? f[1] : "#C9D2CB"; };
+// 예전 메모에 '빨강 유니폼'처럼 적어 둔 경우 유니폼으로 읽기
+const uniformFromMemo = (memo) => { const m = (memo || "").match(/(빨강|빨간|검정|검은|파랑|파란)\s*(색\s*)?유니폼/); if (!m) return ""; const map = { 빨간: "빨강", 검은: "검정", 파란: "파랑" }; return map[m[1]] || m[1]; };
 // 시작~종료 시간 표시 (종료만 있거나 둘 다 없으면 알맞게)
 const timeRange = (x) => (x.time && x.endTime ? `${x.time}~${x.endTime}` : x.time ? x.time : x.endTime ? `~${x.endTime}` : "");
 
 const emptyForm = () => ({
+  videoText: "",
   scheduleId: null,
   editId: null,
   date: todayStr(),
@@ -157,7 +176,7 @@ const POS_LABELS = {
 export default function App() {
   const [data, setData] = useState(null); 
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState("board");
+  const [tab, setTab] = useState("home");
   const [form, setForm] = useState(emptyForm());
   const [formTab, setFormTab] = useState("q1"); // 매치 입력 내 쿼터별 전술판 탭 제어
   const [logTab, setLogTab] = useState({}); // 로그 내 쿼터 보기 토글용
@@ -453,14 +472,15 @@ export default function App() {
       goals: { ...form.goals },
       assists: { ...form.assists },
       mom: form.mom,
-      formations: form.formations // 쿼터 전술 정보 세이브
+      formations: form.formations, // 쿼터 전술 정보 세이브
     };
     const sid = form.scheduleId;
+    const newVideoText = form.videoText;
     const ok = await saveChange((d) => ({
       ...d,
       matches: (editId
-        ? d.matches.map((m) => (m.id === editId ? { ...m, ...match } : m))   // 수정: 영상 등 기존 정보 유지
-        : [...d.matches, match]).sort((a, b) => a.date.localeCompare(b.date)),
+        ? d.matches.map((m) => (m.id === editId ? { ...m, ...match, videos: [...(m.videos || []), ...makeVideos(newVideoText, "", (m.videos || []).length)] } : m))   // 수정: 기존 영상 유지 + 새 영상 추가
+        : [...d.matches, { ...match, videos: makeVideos(newVideoText, "", 0) }]).sort((a, b) => a.date.localeCompare(b.date)),
       schedule: (d.schedule || []).filter((x) => x.id !== sid)
     }));
     if (!ok) return;
@@ -496,7 +516,7 @@ export default function App() {
     const f = schedForm;
     if (!f || !f.date) return;
     if (f.time && f.endTime && f.endTime <= f.time) { showToast("종료 시간이 시작 시간보다 늦어야 해요"); return; }
-    const item = { id: f.id || "s" + Date.now().toString(36), date: f.date, time: f.time, endTime: f.endTime || "", opponent: f.opponent.trim(), place: f.place.trim(), memo: f.memo.trim() };
+    const item = { id: f.id || "s" + Date.now().toString(36), date: f.date, time: f.time, endTime: f.endTime || "", gather: f.gather || "", uniform: f.uniform || "", opponent: f.opponent.trim(), place: f.place.trim(), memo: f.memo.trim() };
     const editing = !!f.id;
     const ok = await saveChange((d) => {
       const list = d.schedule || [];
@@ -565,13 +585,17 @@ export default function App() {
   // ---------- 경기 영상 ----------
   const addVideo = async (mid) => {
     const v = vidInput[mid] || {};
-    const url = (v.url || "").trim();
-    if (!isUrl(url)) { showToast("영상 주소를 확인해 주세요 (https://로 시작)"); return; }
-    const item = { id: "v" + Date.now().toString(36), url, label: (v.label || "").trim() };
-    const ok = await saveChange((d) => ({ ...d, matches: d.matches.map((m) => (m.id === mid ? { ...m, videos: [...(m.videos || []), item] } : m)) }));
+    if (!extractUrls(v.url).length) { showToast("영상 주소를 확인해 주세요 (https://로 시작)"); return; }
+    let added = 0;
+    const ok = await saveChange((d) => ({ ...d, matches: d.matches.map((m) => {
+      if (m.id !== mid) return m;
+      const items = makeVideos(v.url, v.label, (m.videos || []).length);
+      added = items.length;
+      return { ...m, videos: [...(m.videos || []), ...items] };
+    }) }));
     if (!ok) return;
     setVidInput({ ...vidInput, [mid]: { url: "", label: "" } });
-    showToast("영상을 추가했어요");
+    showToast(`영상 ${added}개를 추가했어요`);
   };
   const removeVideo = async (mid, vid) => {
     const ok = await saveChange((d) => ({ ...d, matches: d.matches.map((m) => (m.id === mid ? { ...m, videos: (m.videos || []).filter((x) => x.id !== vid) } : m)) }));
@@ -582,21 +606,31 @@ export default function App() {
   const renderSchedForm = () => (
                 <div className="sched-form">
                   <div className="field-row dt-row">
-                    <label className="field"><span>날짜</span><input type="date" value={schedForm.date} onChange={(e) => setSchedForm({ ...schedForm, date: e.target.value })} /></label>
+                    <label className="field"><span>날짜</span><input type="date" value={schedForm.date} onChange={(e) => setSchedForm((f) => ({ ...f, date: e.target.value }))} /></label>
                     <div className="field"><span>시간</span>
                       <div className="time-range">
-                        <input type="time" aria-label="시작 시간" value={schedForm.time} onChange={(e) => setSchedForm({ ...schedForm, time: e.target.value })} />
+                        <input type="time" aria-label="시작 시간" value={schedForm.time} onChange={(e) => setSchedForm((f) => ({ ...f, time: e.target.value }))} />
                         <span className="tilde">~</span>
-                        <input type="time" aria-label="종료 시간" value={schedForm.endTime || ""} onChange={(e) => setSchedForm({ ...schedForm, endTime: e.target.value })} />
+                        <input type="time" aria-label="종료 시간" value={schedForm.endTime || ""} onChange={(e) => setSchedForm((f) => ({ ...f, endTime: e.target.value }))} />
                       </div>
                     </div>
                   </div>
                   <div className="field-row">
-                    <label className="field"><span>상대팀</span><input value={schedForm.opponent} placeholder="예: FC 상암 (미정이면 비워 두기)" list="opp-list" autoComplete="off" onChange={(e) => setSchedForm({ ...schedForm, opponent: e.target.value })} /></label>
-                    <label className="field"><span>장소</span><input value={schedForm.place} placeholder="예: 망원 유수지" onChange={(e) => setSchedForm({ ...schedForm, place: e.target.value })} /></label>
+                    <label className="field"><span>상대팀</span><input value={schedForm.opponent} placeholder="예: FC 상암 (미정이면 비워 두기)" list="opp-list" autoComplete="off" onChange={(e) => setSchedForm((f) => ({ ...f, opponent: e.target.value }))} /></label>
+                    <label className="field"><span>장소</span><input value={schedForm.place} placeholder="예: 망원 유수지" onChange={(e) => setSchedForm((f) => ({ ...f, place: e.target.value }))} /></label>
+                  </div>
+                  <div className="field-row">
+                    <label className="field"><span>집합 시간</span><input type="time" value={schedForm.gather || ""} onChange={(e) => setSchedForm((f) => ({ ...f, gather: e.target.value }))} /></label>
+                    <div className="field"><span>유니폼</span>
+                      <div className="uni-chips">
+                        {UNIFORMS.map(([n, c]) => (
+                          <button key={n} type="button" className={schedForm.uniform === n ? "uni-chip on" : "uni-chip"} onClick={() => setSchedForm((f) => ({ ...f, uniform: f.uniform === n ? "" : n }))}><i style={{ background: c }} />{n}</button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                   {schedForm.opponent.trim() && <H2H opp={schedForm.opponent} />}
-                  <label className="field" style={{ marginTop: 8 }}><span>메모</span><input value={schedForm.memo} placeholder="예: 원정, 흰 유니폼, 회비 1만 원" onChange={(e) => setSchedForm({ ...schedForm, memo: e.target.value })} /></label>
+                  <label className="field" style={{ marginTop: 8 }}><span>메모</span><input value={schedForm.memo} placeholder="예: 원정, 회비 1만 원" onChange={(e) => setSchedForm((f) => ({ ...f, memo: e.target.value }))} /></label>
                   <div className="sched-actions">
                     <button className="ghost-btn" onClick={() => setSchedForm(null)}>취소</button>
                     <button className="solid-btn" disabled={busy} onClick={addSchedule}>{schedForm.id ? "수정 저장" : "일정 추가"}</button>
@@ -679,6 +713,12 @@ export default function App() {
       if (o > p) w++; else if (o === p) d++; else l++;
     });
     return `${w}승 ${d}무 ${l}패`;
+  };
+  // 매치 결과: 이긴 게임 수와 진 게임 수 비교
+  const matchResult = (m) => {
+    let w = 0, l = 0;
+    validGames(m).forEach((x) => { const o = Number(x.our), p = Number(x.opp); if (o > p) w++; else if (o < p) l++; });
+    return w > l ? "W" : w < l ? "L" : "D";
   };
 
   // 포메이션 전술판 렌더링용 컴포넌트 내부 함수
@@ -825,39 +865,103 @@ export default function App() {
     <div className="wrap">
       <style>{CSS}</style>
 
-      <header className="board-head">
-        <svg className="pitch-mark" viewBox="0 0 200 200" aria-hidden="true">
-          <circle cx="100" cy="100" r="58" fill="none" stroke="currentColor" strokeWidth="1.5" />
-          <circle cx="100" cy="100" r="3" fill="currentColor" />
-          <line x1="0" y1="100" x2="200" y2="100" stroke="currentColor" strokeWidth="1.5" />
-        </svg>
+      <header className="board-head compact">
         <div className="head-inner">
-          <div className="brand"><span className="crest">FC</span><div><div className="team">헌강자 FC</div><div className="sub-brand">팀 기록실</div></div></div>
-          <div className="scoreboard" aria-label="팀 통산 전적">
-            <div className="sb w"><span className="n">{teamRecord.w}</span><span className="l">승</span></div>
-            <div className="sb d"><span className="n">{teamRecord.d}</span><span className="l">무</span></div>
-            <div className="sb l"><span className="n">{teamRecord.l}</span><span className="l">패</span></div>
-          </div>
-          <dl className="record-strip">
-            <div className="rec"><dt>매치</dt><dd>{teamRecord.matchDays}</dd></div>
-            <div className="rec"><dt>게임</dt><dd>{teamRecord.games}</dd></div>
-            <div className="rec"><dt>득실</dt><dd>{teamRecord.gf}:{teamRecord.ga}</dd></div>
-            <div className="rec"><dt>활동 선수</dt><dd>{activeStats.length}</dd></div>
-          </dl>
-          {nextMatch && (
-            <button className="next-match" onClick={() => { setTab("log"); setMatchSeg("upcoming"); }}>
-              <span className="nm-d">{ddayLabel(dday(nextMatch.date))}</span>
-              <span className="nm-t">다음 경기 · {fmtDate(nextMatch.date)}{timeRange(nextMatch) ? ` ${timeRange(nextMatch)}` : ""}{normTeam(nextMatch.opponent) ? ` · vs ${nextMatch.opponent}` : " · 상대 미정"}{nextMatch.place ? ` · ${nextMatch.place}` : ""}</span>
-            </button>
-          )}
+          <div className="brand"><img className="crest-img" src="/logo.png" alt="헌강자 FC" width="36" height="36" /><div><div className="team">헌강자 FC</div><div className="sub-brand">팀 기록실</div></div></div>
         </div>
       </header>
 
       <nav className="tabs">
-        {[["board", "순위표"], ["input", "매치 입력"], ["log", "경기 일정"]].map(([k, label]) => (
+        {[["home", "홈"], ["board", "순위표"], ["input", "매치 입력"], ["log", "경기 일정"]].map(([k, label]) => (
           <button key={k} className={tab === k ? "tab on" : "tab"} onClick={() => setTab(k)}>{label}</button>
         ))}
       </nav>
+
+      {/* ---------- 홈 ---------- */}
+      {tab === "home" && (() => {
+        const recent5 = [...data.matches].sort((a, b) => a.date.localeCompare(b.date)).slice(-5);
+        const last = recent5[recent5.length - 1];   // 가장 최근에 치른 경기
+        const leader = (key) => {
+          const pool = stats.filter((p) => !isMerc(p.name));
+          const top = Math.max(0, ...pool.map((p) => p[key] || 0));
+          return { top, names: top > 0 ? pool.filter((p) => (p[key] || 0) === top).map((p) => p.name) : [] };
+        };
+        const sc = leader("g"), as = leader("a");
+        const nm = nextMatch;
+        const uni = nm ? (nm.uniform || uniformFromMemo(nm.memo)) : "";
+        return (
+          <section className="home">
+            <div className="h-title">다음 경기</div>
+            {nm ? (
+              <button className="h-next" onClick={() => { setTab("log"); setMatchSeg("upcoming"); }}>
+                <div className="h-next-top">
+                  <span className={`dd ${dday(nm.date) === 0 ? "today" : ""}`}>{ddayLabel(dday(nm.date))}</span>
+                  <span className="h-date">{fmtDate(nm.date)}{timeRange(nm) ? ` · ${timeRange(nm).replace("~", "–")}` : ""}</span>
+                </div>
+                <div className="h-opp">{normTeam(nm.opponent) ? `vs ${nm.opponent}` : "상대 미정"}</div>
+                <div className="h-tags">
+                  {nm.place && <span>{nm.place}</span>}
+                  {nm.gather && <span>{nm.gather} 집합</span>}
+                  {uni && <span className="uni"><i style={{ background: uniformColor(uni) }} />유니폼 {uni}</span>}
+                </div>
+              </button>
+            ) : (
+              <button className="h-next empty" onClick={() => { setTab("log"); setMatchSeg("upcoming"); setSchedForm(emptySched()); }}>잡힌 경기가 없어요 · 일정 추가</button>
+            )}
+
+            {last && (() => {
+              const r = matchResult(last);
+              const fmtMap = (o) => Object.entries(o || {}).map(([n, c]) => (c > 1 ? `${n} ${c}` : n)).join(", ");
+              return (
+                <>
+                  <div className="h-title">직전 경기</div>
+                  <button className="h-last" onClick={() => { setTab("log"); setMatchSeg("past"); setExpanded(last.id); window.scrollTo(0, 0); }}>
+                    <div className="h-last-top">
+                      <span className={`r5 ${r}`}>{r === "W" ? "승" : r === "D" ? "무" : "패"}</span>
+                      <div className="h-last-main">
+                        <div className="h-last-opp">{last.opponent ? `vs ${last.opponent}` : "상대 기록 없음"}</div>
+                        <div className="h-last-date">{fmtDate(last.date)} · {matchSummary(last)} · {last.attendees.length}명</div>
+                      </div>
+                    </div>
+                    <div className="games-line">{validGames(last).map(gameBadge)}</div>
+                    {(Object.keys(last.goals || {}).length > 0 || Object.keys(last.assists || {}).length > 0 || last.mom || (last.videos || []).length > 0) && (
+                      <div className="h-last-stats">
+                        {Object.keys(last.goals || {}).length > 0 && <span><b>득점</b>{fmtMap(last.goals)}</span>}
+                        {Object.keys(last.assists || {}).length > 0 && <span><b>도움</b>{fmtMap(last.assists)}</span>}
+                        {last.mom && <span><b>MOM</b>★ {last.mom}</span>}
+                        {(last.videos || []).length > 0 && <span><b>영상</b>{last.videos.length}개</span>}
+                      </div>
+                    )}
+                  </button>
+                </>
+              );
+            })()}
+
+            <div className="h-title">최근 경기</div>
+            <div className="h-form">
+              {recent5.length ? recent5.map((m) => { const r = matchResult(m); return <span key={m.id} className={`r5 ${r}`} title={`${m.date} ${m.opponent || ""}`}>{r === "W" ? "승" : r === "D" ? "무" : "패"}</span>; }) : <span className="h-muted">아직 기록된 경기가 없어요</span>}
+            </div>
+
+            <div className="h-leaders">
+              <button className="h-lead" onClick={() => sc.names[0] && setPlayerView(sc.names[0])}>
+                <span className="h-lead-k">득점왕</span>
+                <span className="h-lead-n">{sc.names[0] || "-"}{sc.names.length > 1 && <small> 외 {sc.names.length - 1}명</small>}</span>
+                <span className="h-lead-v">{sc.top}골{sc.names.length > 1 && <small> 공동 1위</small>}</span>
+              </button>
+              <button className="h-lead" onClick={() => as.names[0] && setPlayerView(as.names[0])}>
+                <span className="h-lead-k">도움왕</span>
+                <span className="h-lead-n">{as.names[0] || "-"}{as.names.length > 1 && <small> 외 {as.names.length - 1}명</small>}</span>
+                <span className="h-lead-v">{as.top}도움{as.names.length > 1 && <small> 공동 1위</small>}</span>
+              </button>
+            </div>
+
+            <div className="h-season">
+              <span>시즌 <b>{teamRecord.w}</b>승 <b>{teamRecord.d}</b>무 <b>{teamRecord.l}</b>패</span>
+              <span>득실 {teamRecord.gf}:{teamRecord.ga} · {teamRecord.matchDays}매치 · 활동 {activeStats.length}명</span>
+            </div>
+          </section>
+        );
+      })()}
 
       {/* ---------- 순위표 ---------- */}
       {tab === "board" && (
@@ -1082,6 +1186,12 @@ export default function App() {
             </>
           )}
 
+          <div className="section-label">경기 영상 <span className="sub">선택 · 나중에 지난 경기에서도 추가 가능</span></div>
+          <div className="vid-add">
+            <textarea rows={3} value={form.videoText} placeholder={"유튜브, 드라이브 링크를 붙여 넣으세요\n여러 개면 줄을 바꿔서 (영상 1, 2… 순서로 저장)"} onChange={(e) => setForm({ ...form, videoText: e.target.value })} />
+            {extractUrls(form.videoText).length > 0 && <p className="note" style={{ margin: 0 }}>링크 {extractUrls(form.videoText).length}개가 함께 저장돼요{form.editId ? " (기존 영상에 추가)" : ""}</p>}
+          </div>
+
           <button className="save" disabled={!canSave || busy} onClick={saveMatch}>
             {busy ? "저장 중…" : !canSave ? "스코어와 참석 선수를 입력하면 저장할 수 있어요" : form.editId ? "수정 저장" : "매치 저장"}
           </button>
@@ -1115,14 +1225,20 @@ export default function App() {
                         <span className="sc-date">{fmtDate(x.date)}{timeRange(x) ? ` · ${timeRange(x)}` : ""}</span>
                       </div>
                       <div className={normTeam(x.opponent) ? "sc-opp" : "sc-opp tbd"}>{normTeam(x.opponent) ? `vs ${x.opponent}` : "상대팀 미정"}</div>
-                      {(x.place || x.memo) && <div className="sc-meta">{[x.place, x.memo].filter(Boolean).join(" · ")}</div>}
+                      {(x.place || x.gather || x.uniform || uniformFromMemo(x.memo)) && (
+                        <div className="sc-meta">
+                          {[x.place, x.gather && `${x.gather} 집합`].filter(Boolean).join(" · ")}
+                          {(x.uniform || uniformFromMemo(x.memo)) && <span className="uni"><i style={{ background: uniformColor(x.uniform || uniformFromMemo(x.memo)) }} />유니폼 {x.uniform || uniformFromMemo(x.memo)}</span>}
+                        </div>
+                      )}
+                      {x.memo && <div className="sc-meta">{x.memo}</div>}
                       {x.opponent && <H2H opp={x.opponent} compact />}
                       {confirmSched === x.id ? (
                         <div className="del-confirm"><span>이 일정을 삭제할까요?</span><span><button onClick={() => setConfirmSched(null)}>취소</button><button className="danger" onClick={() => deleteSchedule(x.id)}>삭제</button></span></div>
                       ) : (
                         <div className="sc-actions">
                           <button className="ghost-btn" onClick={() => setConfirmSched(x.id)}>삭제</button>
-                          <button className="ghost-btn" onClick={() => { setConfirmSched(null); setSchedForm({ id: x.id, date: x.date, time: x.time || "", endTime: x.endTime || "", opponent: x.opponent || "", place: x.place || "", memo: x.memo || "" }); }}>수정</button>
+                          <button className="ghost-btn" onClick={() => { setConfirmSched(null); setSchedForm({ id: x.id, date: x.date, time: x.time || "", endTime: x.endTime || "", gather: x.gather || "", uniform: x.uniform || "", opponent: x.opponent || "", place: x.place || "", memo: x.memo || "" }); }}>수정</button>
                           <button className="solid-btn" onClick={() => startResult(x)}>결과 입력</button>
                         </div>
                       )}
@@ -1193,9 +1309,9 @@ export default function App() {
                           );
                         })}
                         <div className="vid-add">
-                          <input value={(vidInput[m.id] || {}).url || ""} placeholder="영상 링크 (유튜브, 드라이브 등)" onChange={(e) => setVidInput({ ...vidInput, [m.id]: { ...(vidInput[m.id] || {}), url: e.target.value } })} />
-                          <input value={(vidInput[m.id] || {}).label || ""} placeholder="이름 (예: 1쿼터, 하이라이트)" onChange={(e) => setVidInput({ ...vidInput, [m.id]: { ...(vidInput[m.id] || {}), label: e.target.value } })} />
-                          <button className="solid-btn" disabled={busy} onClick={() => addVideo(m.id)}>영상 추가</button>
+                          <textarea rows={2} value={(vidInput[m.id] || {}).url || ""} placeholder={"영상 링크 (유튜브, 드라이브 등)\n여러 개면 줄을 바꿔 한꺼번에 붙여 넣기"} onChange={(e) => setVidInput({ ...vidInput, [m.id]: { ...(vidInput[m.id] || {}), url: e.target.value } })} />
+                          <input value={(vidInput[m.id] || {}).label || ""} placeholder="이름 (예: 1쿼터, 하이라이트) · 비우면 영상 1, 2…" onChange={(e) => setVidInput({ ...vidInput, [m.id]: { ...(vidInput[m.id] || {}), label: e.target.value } })} />
+                          <button className="solid-btn" disabled={busy} onClick={() => addVideo(m.id)}>{extractUrls((vidInput[m.id] || {}).url).length > 1 ? `영상 ${extractUrls((vidInput[m.id] || {}).url).length}개 추가` : "영상 추가"}</button>
                         </div>
                       </div>
                       
@@ -1387,6 +1503,50 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* header */
+.board-head.compact { padding: calc(env(safe-area-inset-top, 0px) + 14px) 20px 14px; }
+.crest-img { width: 36px; height: 36px; object-fit: contain; flex: none; filter: drop-shadow(0 1px 2px rgba(0,0,0,.25)); }
+/* home */
+.home { padding-top: 14px; }
+.h-title { font-size: 13px; font-weight: 700; color: var(--ink-2); margin: 18px 2px 8px; }
+.h-title:first-child { margin-top: 2px; }
+.h-next { display: block; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; }
+.h-next.empty { color: var(--ink-2); font-size: 14px; }
+.h-next-top { display: flex; align-items: center; gap: 8px; }
+.h-date { font-size: 14px; font-weight: 700; color: var(--ink-2); }
+.h-opp { font-size: 18px; font-weight: 800; margin-top: 6px; letter-spacing: -0.02em; }
+.h-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.h-tags > span { font-size: 12.5px; background: var(--chalk); color: var(--ink-2); border-radius: 999px; padding: 3px 10px; }
+.h-last { display: block; width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; }
+.h-last-top { display: flex; align-items: center; gap: 12px; }
+.h-last-main { min-width: 0; }
+.h-last-opp { font-size: 16px; font-weight: 800; letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h-last-date { font-size: 12.5px; color: var(--ink-2); }
+.h-last .games-line { margin-top: 10px; }
+.h-last-stats { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-2); font-size: 13px; }
+.h-last-stats b { display: inline-block; width: 38px; color: var(--ink-3); font-weight: 600; font-size: 12px; }
+.h-form { display: flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; }
+.r5 { width: 30px; height: 30px; border-radius: 8px; display: inline-grid; place-items: center; font-size: 12.5px; font-weight: 800; }
+.r5.W { background: var(--win-soft); color: var(--win); }
+.r5.D { background: var(--draw-soft); color: var(--draw); }
+.r5.L { background: var(--loss-soft); color: var(--loss); }
+.h-muted { font-size: 13px; color: var(--ink-3); }
+.h-leaders { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 18px; }
+.h-lead { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; display: flex; flex-direction: column; text-align: left; min-width: 0; }
+.h-lead-k { font-size: 12px; color: var(--ink-2); font-weight: 600; }
+.h-lead-n { font-size: 16px; font-weight: 800; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.h-lead-n small, .h-lead-v small { font-size: 11.5px; font-weight: 500; color: var(--ink-3); }
+.h-lead-v { font-size: 15px; font-weight: 700; color: var(--grass); }
+.h-season { display: flex; flex-direction: column; gap: 2px; margin-top: 18px; padding: 12px 14px; border-radius: var(--r); background: var(--pitch); color: #fff; }
+.h-season span:first-child { font-size: 14px; }
+.h-season b { font-weight: 800; }
+.h-season span:last-child { font-size: 12px; color: rgba(255,255,255,.65); }
+.dd { flex: none; }
+.uni { display: inline-flex; align-items: center; gap: 5px; }
+.uni i { width: 10px; height: 10px; border-radius: 3px; border: 1px solid rgba(0,0,0,.15); display: inline-block; }
+.uni-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-height: 44px; }
+.uni-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); background: var(--card); border-radius: 999px; padding: 6px 11px; font-size: 13px; color: var(--ink-2); }
+.uni-chip i { width: 10px; height: 10px; border-radius: 3px; border: 1px solid rgba(0,0,0,.15); }
+.uni-chip.on { border-color: var(--pitch); background: var(--pitch); color: #fff; font-weight: 700; }
 .board-head { position: relative; overflow: hidden; background: var(--pitch); color: #fff; padding: calc(env(safe-area-inset-top, 0px) + 22px) 20px 20px; }
 .board-head::before { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, rgba(255,255,255,.035) 0 48px, transparent 48px 96px); pointer-events: none; }
 .pitch-mark { position: absolute; right: -70px; top: 50%; transform: translateY(-50%); width: 240px; height: 240px; color: rgba(255,255,255,.1); pointer-events: none; }
@@ -1492,6 +1652,7 @@ button:disabled { opacity: .55; cursor: default; }
 .solid-btn.sm, .ghost-btn.sm { padding: 6px 10px; font-size: 12.5px; border-radius: 8px; text-decoration: none; }
 .danger-t { color: var(--loss) !important; }
 .vid-add { display: flex; flex-direction: column; gap: 6px; margin-top: 2px; }
+.vid-add textarea { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; font-size: 14.5px; resize: vertical; min-height: 56px; }
 .vid-add input { padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 14.5px; }
 .next-match { display: flex; align-items: center; gap: 10px; width: 100%; margin-top: 14px; padding: 10px 12px; border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.06); border-radius: 12px; color: #fff; text-align: left; }
 .nm-d { flex: none; font-size: 12px; font-weight: 800; background: var(--gold); color: var(--pitch); padding: 3px 8px; border-radius: 6px; }
@@ -1523,7 +1684,7 @@ button:disabled { opacity: .55; cursor: default; }
 .sc-date { font-size: 13.5px; font-weight: 600; color: var(--ink-2); }
 .sc-opp { font-size: 18px; font-weight: 800; margin-top: 6px; letter-spacing: -0.02em; }
 .sc-opp.tbd { color: var(--ink-3); font-weight: 700; }
-.sc-meta { font-size: 13.5px; color: var(--ink-2); margin-top: 2px; }
+.sc-meta { font-size: 13.5px; color: var(--ink-2); margin-top: 2px; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; }
 .from-sched { background: var(--gold-soft); border-radius: 12px; padding: 12px 14px; font-size: 13.5px; line-height: 1.5; margin-bottom: 14px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
 .from-sched button { flex: none; border: 0; background: var(--card); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; font-weight: 600; }
 .seg-mini { display: flex; gap: 4px; background: var(--line-2); padding: 3px; border-radius: 10px; margin-top: 12px; }
