@@ -108,6 +108,9 @@ const dday = (d) => {
 };
 const ddayLabel = (n) => (n === 0 ? "오늘" : n > 0 ? `D-${n}` : "결과 미입력");
 // 상대팀 이름 비교용 (띄어쓰기·대소문자 무시)
+// 용병: 이름이 '용병'으로 시작하면 이번 매치에만 참가하는 선수로 봄 (명단·순위에는 안 들어감)
+const isMerc = (n) => /^용병/.test(n || "");
+
 const UNKNOWN_TEAM = new Set(["미정", "상대미정", "미확정", "tbd", "?", "-"]);
 const normTeam = (n) => { const k = (n || "").replace(/\s+/g, "").toLowerCase(); return UNKNOWN_TEAM.has(k) ? "" : k; };
 
@@ -161,6 +164,7 @@ export default function App() {
   const [sortKey, setSortKey] = useState("points");
   const [sortDir, setSortDir] = useState(-1);
   const [toast, setToast] = useState("");
+  const [mercName, setMercName] = useState("");      // 용병 이름 입력칸
   const [busy, setBusy] = useState(false);          // 저장 중 (연타 방지)
   const busyRef = useRef(false);
   const [playerView, setPlayerView] = useState(null); // 선수 개인 페이지
@@ -383,7 +387,26 @@ export default function App() {
     });
   };
 
+  // 용병 추가: 이름을 적으면 '용병 이름', 비우면 '용병 1, 2…' 순서로. assign이 있으면 그 자리에 바로 배치
+  const addMerc = (rawName, assign) => {
+    setForm((f) => {
+      const typed = (rawName || "").trim();
+      let label = typed ? (isMerc(typed) ? typed : `용병 ${typed}`) : "";
+      if (!label) {
+        const nums = f.attendees.filter(isMerc).map((n) => Number((n.match(/^용병\s*(\d+)$/) || [])[1])).filter(Boolean);
+        label = `용병 ${Math.max(0, ...nums) + 1}`;
+      }
+      if (f.attendees.includes(label)) { if (!assign) showToast("이미 추가된 용병이에요"); if (!assign) return f; }
+      const attendees = f.attendees.includes(label) ? f.attendees : [...f.attendees, label];
+      let formations = f.formations;
+      if (assign) formations = { ...f.formations, [assign.q]: { ...f.formations[assign.q], [assign.pos]: label } };
+      return { ...f, attendees, formations };
+    });
+    setMercName("");
+  };
+
   const handlePositionChange = (qKey, pos, name) => {
+    if (name === "__merc__") { addMerc("", { q: qKey, pos }); return; }
     setForm((f) => {
       const updatedQuarter = { ...f.formations[qKey], [pos]: name };
       return { ...f, formations: { ...f.formations, [qKey]: updatedQuarter } };
@@ -689,6 +712,7 @@ export default function App() {
               </option>
             );
           })}
+          <option value="__merc__">＋ 용병 추가</option>
         </select>
       );
     };
@@ -987,7 +1011,7 @@ export default function App() {
           </div>
 
           <div className="section-label">
-            참석 선수 <b>{form.attendees.length}</b>명
+            참석 선수 <b>{form.attendees.length}</b>명{form.attendees.some(isMerc) && <span className="sub">(용병 {form.attendees.filter(isMerc).length})</span>}
             <input className="roster-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="이름 검색" />
           </div>
           <div className="chip-grid">
@@ -1000,6 +1024,23 @@ export default function App() {
               {showInactiveInput ? "미활동 멤버 숨기기" : "미활동 멤버도 보기"}
             </button>
           )}
+
+          {/* 용병: 이번 매치에만 참가 */}
+          <div className="merc-box">
+            <div className="merc-head"><b>용병</b><span>이번 매치에만 들어가고 선수 명단·순위에는 추가되지 않아요</span></div>
+            {form.attendees.some(isMerc) && (
+              <div className="chip-grid" style={{ marginBottom: 8 }}>
+                {form.attendees.filter(isMerc).map((n) => (
+                  <button key={n} className="chip on merc" onClick={() => toggleAttendee(n)} aria-label={`${n} 빼기`}>{n} ×</button>
+                ))}
+              </div>
+            )}
+            <div className="merc-add">
+              <input value={mercName} onChange={(e) => setMercName(e.target.value)} placeholder="이름 (모르면 비워 두기)"
+                onKeyDown={(e) => e.key === "Enter" && addMerc(mercName)} />
+              <button onClick={() => addMerc(mercName)}>+ 용병 추가</button>
+            </div>
+          </div>
 
           {/* 쿼터별 포메이션 전술판 전용 배치 탭 영역 */}
           <div className="section-label">당일 쿼터별 라인업 전술판</div>
@@ -1459,6 +1500,14 @@ button:disabled { opacity: .55; cursor: default; }
 .sched-form { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px; }
 .field-row.dt-row { grid-template-columns: 1fr 1.35fr; }
 @media (max-width: 380px) { .field-row.dt-row { grid-template-columns: 1fr; } }
+.merc-box { margin-top: 12px; background: var(--card); border: 1px dashed var(--line); border-radius: var(--r); padding: 12px; }
+.merc-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+.merc-head b { font-size: 14px; }
+.merc-head span { font-size: 12.5px; color: var(--ink-2); }
+.chip.merc { background: #3A4A63; border-color: #3A4A63; }
+.merc-add { display: flex; gap: 8px; }
+.merc-add input { flex: 1; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--chalk); font-size: 14.5px; }
+.merc-add button { flex: none; border: 0; border-radius: 10px; padding: 0 14px; background: var(--ink); color: #fff; font-weight: 600; font-size: 14px; }
 .time-range { display: flex; align-items: center; gap: 4px; }
 .time-range input { flex: 1; min-width: 0; padding: 11px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 15px; color: var(--ink); min-height: 44px; }
 .tilde { color: var(--ink-3); font-weight: 700; }
