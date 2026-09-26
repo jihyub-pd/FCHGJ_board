@@ -108,7 +108,8 @@ const dday = (d) => {
 };
 const ddayLabel = (n) => (n === 0 ? "오늘" : n > 0 ? `D-${n}` : "결과 미입력");
 // 상대팀 이름 비교용 (띄어쓰기·대소문자 무시)
-const normTeam = (n) => (n || "").replace(/\s+/g, "").toLowerCase();
+const UNKNOWN_TEAM = new Set(["미정", "상대미정", "미확정", "tbd", "?", "-"]);
+const normTeam = (n) => { const k = (n || "").replace(/\s+/g, "").toLowerCase(); return UNKNOWN_TEAM.has(k) ? "" : k; };
 
 // 영상 링크 → 유튜브면 임베드 주소로
 const ytEmbed = (url) => {
@@ -128,7 +129,9 @@ const ytEmbed = (url) => {
 };
 const isUrl = (v) => { try { const u = new URL(v.trim()); return u.protocol === "https:" || u.protocol === "http:"; } catch (e) { return false; } };
 
-const emptySched = () => ({ date: todayStr(), time: "", opponent: "", place: "", memo: "" });
+const emptySched = () => ({ date: todayStr(), time: "", endTime: "", opponent: "", place: "", memo: "" });
+// 시작~종료 시간 표시 (종료만 있거나 둘 다 없으면 알맞게)
+const timeRange = (x) => (x.time && x.endTime ? `${x.time}~${x.endTime}` : x.time ? x.time : x.endTime ? `~${x.endTime}` : "");
 
 const emptyForm = () => ({
   scheduleId: null,
@@ -469,7 +472,8 @@ export default function App() {
   const addSchedule = async () => {
     const f = schedForm;
     if (!f || !f.date) return;
-    const item = { id: f.id || "s" + Date.now().toString(36), date: f.date, time: f.time, opponent: f.opponent.trim(), place: f.place.trim(), memo: f.memo.trim() };
+    if (f.time && f.endTime && f.endTime <= f.time) { showToast("종료 시간이 시작 시간보다 늦어야 해요"); return; }
+    const item = { id: f.id || "s" + Date.now().toString(36), date: f.date, time: f.time, endTime: f.endTime || "", opponent: f.opponent.trim(), place: f.place.trim(), memo: f.memo.trim() };
     const editing = !!f.id;
     const ok = await saveChange((d) => {
       const list = d.schedule || [];
@@ -488,7 +492,7 @@ export default function App() {
   };
 
   const startResult = (x) => {
-    setForm({ ...emptyForm(), date: x.date, opponent: x.opponent || "", scheduleId: x.id });
+    setForm({ ...emptyForm(), date: x.date, opponent: normTeam(x.opponent) ? x.opponent : "", scheduleId: x.id });
     setTab("input");
     window.scrollTo(0, 0);
     showToast("일정 정보를 불러왔어요. 스코어와 참석 선수를 입력해 주세요.");
@@ -521,7 +525,7 @@ export default function App() {
   };
   const H2H = ({ opp, compact }) => {
     const r = h2h(opp);
-    if (!opp || !opp.trim()) return null;
+    if (!normTeam(opp)) return null;   // 비어 있거나 '미정'이면 전적 표시 안 함
     if (!r) return <div className="h2h first">이 팀과는 첫 만남이에요</div>;
     return (
       <div className="h2h">
@@ -554,12 +558,18 @@ export default function App() {
 
   const renderSchedForm = () => (
                 <div className="sched-form">
-                  <div className="field-row">
+                  <div className="field-row dt-row">
                     <label className="field"><span>날짜</span><input type="date" value={schedForm.date} onChange={(e) => setSchedForm({ ...schedForm, date: e.target.value })} /></label>
-                    <label className="field"><span>시간</span><input type="time" value={schedForm.time} onChange={(e) => setSchedForm({ ...schedForm, time: e.target.value })} /></label>
+                    <div className="field"><span>시간</span>
+                      <div className="time-range">
+                        <input type="time" aria-label="시작 시간" value={schedForm.time} onChange={(e) => setSchedForm({ ...schedForm, time: e.target.value })} />
+                        <span className="tilde">~</span>
+                        <input type="time" aria-label="종료 시간" value={schedForm.endTime || ""} onChange={(e) => setSchedForm({ ...schedForm, endTime: e.target.value })} />
+                      </div>
+                    </div>
                   </div>
                   <div className="field-row">
-                    <label className="field"><span>상대팀</span><input value={schedForm.opponent} placeholder="예: FC 상암" list="opp-list" autoComplete="off" onChange={(e) => setSchedForm({ ...schedForm, opponent: e.target.value })} /></label>
+                    <label className="field"><span>상대팀</span><input value={schedForm.opponent} placeholder="예: FC 상암 (미정이면 비워 두기)" list="opp-list" autoComplete="off" onChange={(e) => setSchedForm({ ...schedForm, opponent: e.target.value })} /></label>
                     <label className="field"><span>장소</span><input value={schedForm.place} placeholder="예: 망원 유수지" onChange={(e) => setSchedForm({ ...schedForm, place: e.target.value })} /></label>
                   </div>
                   {schedForm.opponent.trim() && <H2H opp={schedForm.opponent} />}
@@ -813,7 +823,7 @@ export default function App() {
           {nextMatch && (
             <button className="next-match" onClick={() => { setTab("log"); setMatchSeg("upcoming"); }}>
               <span className="nm-d">{ddayLabel(dday(nextMatch.date))}</span>
-              <span className="nm-t">다음 경기 · {fmtDate(nextMatch.date)}{nextMatch.time ? ` ${nextMatch.time}` : ""}{nextMatch.opponent ? ` · vs ${nextMatch.opponent}` : ""}{nextMatch.place ? ` · ${nextMatch.place}` : ""}</span>
+              <span className="nm-t">다음 경기 · {fmtDate(nextMatch.date)}{timeRange(nextMatch) ? ` ${timeRange(nextMatch)}` : ""}{normTeam(nextMatch.opponent) ? ` · vs ${nextMatch.opponent}` : " · 상대 미정"}{nextMatch.place ? ` · ${nextMatch.place}` : ""}</span>
             </button>
           )}
         </div>
@@ -1061,9 +1071,9 @@ export default function App() {
                     <div className={`sched-card ${n < 0 ? "overdue" : ""}`} key={x.id}>
                       <div className="sc-top">
                         <span className={`dd ${n === 0 ? "today" : n < 0 ? "late" : ""}`}>{ddayLabel(n)}</span>
-                        <span className="sc-date">{fmtDate(x.date)}{x.time ? ` · ${x.time}` : ""}</span>
+                        <span className="sc-date">{fmtDate(x.date)}{timeRange(x) ? ` · ${timeRange(x)}` : ""}</span>
                       </div>
-                      <div className="sc-opp">{x.opponent ? `vs ${x.opponent}` : "상대 미정"}</div>
+                      <div className={normTeam(x.opponent) ? "sc-opp" : "sc-opp tbd"}>{normTeam(x.opponent) ? `vs ${x.opponent}` : "상대팀 미정"}</div>
                       {(x.place || x.memo) && <div className="sc-meta">{[x.place, x.memo].filter(Boolean).join(" · ")}</div>}
                       {x.opponent && <H2H opp={x.opponent} compact />}
                       {confirmSched === x.id ? (
@@ -1071,7 +1081,7 @@ export default function App() {
                       ) : (
                         <div className="sc-actions">
                           <button className="ghost-btn" onClick={() => setConfirmSched(x.id)}>삭제</button>
-                          <button className="ghost-btn" onClick={() => { setConfirmSched(null); setSchedForm({ id: x.id, date: x.date, time: x.time || "", opponent: x.opponent || "", place: x.place || "", memo: x.memo || "" }); }}>수정</button>
+                          <button className="ghost-btn" onClick={() => { setConfirmSched(null); setSchedForm({ id: x.id, date: x.date, time: x.time || "", endTime: x.endTime || "", opponent: x.opponent || "", place: x.place || "", memo: x.memo || "" }); }}>수정</button>
                           <button className="solid-btn" onClick={() => startResult(x)}>결과 입력</button>
                         </div>
                       )}
@@ -1447,6 +1457,11 @@ button:disabled { opacity: .55; cursor: default; }
 .nm-t { font-size: 13.5px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .add-sched { width: 100%; padding: 13px; border: 1px dashed var(--line); border-radius: var(--r); background: var(--card); color: var(--grass); font-weight: 700; font-size: 14.5px; margin-bottom: 10px; }
 .sched-form { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 14px; margin-bottom: 10px; display: flex; flex-direction: column; gap: 8px; }
+.field-row.dt-row { grid-template-columns: 1fr 1.35fr; }
+@media (max-width: 380px) { .field-row.dt-row { grid-template-columns: 1fr; } }
+.time-range { display: flex; align-items: center; gap: 4px; }
+.time-range input { flex: 1; min-width: 0; padding: 11px 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 15px; color: var(--ink); min-height: 44px; }
+.tilde { color: var(--ink-3); font-weight: 700; }
 .sched-actions, .sc-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
 .solid-btn { border: 0; border-radius: 10px; padding: 10px 14px; background: var(--pitch); color: #fff; font-weight: 700; font-size: 14px; }
 .ghost-btn { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; background: var(--card); color: var(--ink-2); font-weight: 600; font-size: 14px; }
@@ -1458,6 +1473,7 @@ button:disabled { opacity: .55; cursor: default; }
 .dd.late { background: var(--gold-soft); color: #8A6A10; }
 .sc-date { font-size: 13.5px; font-weight: 600; color: var(--ink-2); }
 .sc-opp { font-size: 18px; font-weight: 800; margin-top: 6px; letter-spacing: -0.02em; }
+.sc-opp.tbd { color: var(--ink-3); font-weight: 700; }
 .sc-meta { font-size: 13.5px; color: var(--ink-2); margin-top: 2px; }
 .from-sched { background: var(--gold-soft); border-radius: 12px; padding: 12px 14px; font-size: 13.5px; line-height: 1.5; margin-bottom: 14px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
 .from-sched button { flex: none; border: 0; background: var(--card); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; font-weight: 600; }
