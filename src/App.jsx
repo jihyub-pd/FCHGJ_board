@@ -128,7 +128,11 @@ export default function App() {
   const [confirmDel, setConfirmDel] = useState(null);
   const [newPlayer, setNewPlayer] = useState("");
   const [manage, setManage] = useState(false);      // 선수 관리 펼침
-  const [confirmRemove, setConfirmRemove] = useState(null);
+  const [selected, setSelected] = useState([]);           // 명단 관리에서 체크한 선수
+  const [rosterFilter, setRosterFilter] = useState("all"); // all | active | inactive
+  const [confirmBulkDel, setConfirmBulkDel] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);     // 순위표에 미활동 포함
+  const [showInactiveInput, setShowInactiveInput] = useState(false); // 참석 선택에 미활동 포함
   const [query, setQuery] = useState("");
   const [sheet, setSheet] = useState(null); // 구글 시트 기록
 
@@ -199,6 +203,8 @@ export default function App() {
 
   // 삭제(숨김) 처리된 선수 — 시트에 이름이 남아 있어도 앱에서는 보이지 않음
   const hidden = useMemo(() => new Set((data && data.hidden) || []), [data]);
+  // 미활동(휴식) 멤버 — 기록은 유지, 순위표와 참석 선택에서 기본으로 숨김
+  const inactive = useMemo(() => new Set((data && data.inactive) || []), [data]);
 
   // 앱에 입력된 매치에서 계산한 클린시트 (시트에 값이 없을 때 사용)
   const appCleanSheets = (name) => (data ? data.matches.reduce((sum, m) =>
@@ -251,7 +257,9 @@ export default function App() {
     return arr;
   }, [stats, sortKey, sortDir]);
 
-  const podium = useMemo(() => [...stats].sort((x, y) => (y.points - x.points) || (y.g - x.g) || (y.att - x.att)).slice(0, 3), [stats]);
+  const activeStats = useMemo(() => stats.filter((p) => !inactive.has(p.name)), [stats, inactive]);
+  const shown = useMemo(() => (showInactive ? sorted : sorted.filter((p) => !inactive.has(p.name))), [sorted, inactive, showInactive]);
+  const podium = useMemo(() => [...activeStats].sort((x, y) => (y.points - x.points) || (y.g - x.g) || (y.att - x.att)).slice(0, 3), [activeStats]);
 
   const teamRecord = useMemo(() => {
     const t = { ...BASE_TEAM, matchDays: BASE_MATCHES };
@@ -360,23 +368,43 @@ export default function App() {
     const ok = await saveChange((d) => ({
       ...d,
       players: d.players.includes(name) ? d.players : [...d.players, name],
-      hidden: (d.hidden || []).filter((n) => n !== name)
+      hidden: (d.hidden || []).filter((n) => n !== name),
+      inactive: (d.inactive || []).filter((n) => n !== name)
     }));
     if (!ok) return;
     setNewPlayer("");
     showToast(wasHidden ? `${name} 선수를 명단에 다시 넣었어요` : `${name} 선수를 명단에 추가했어요`);
   };
 
-  const removePlayer = async (name) => {
+  const toggleSelect = (name) => { setConfirmBulkDel(false); setSelected((sel) => sel.includes(name) ? sel.filter((n) => n !== name) : [...sel, name]); };
+
+  const setStatus = async (makeInactive) => {
+    const names = selected;
+    if (!names.length) return;
+    const ok = await saveChange((d) => {
+      const cur = new Set(d.inactive || []);
+      names.forEach((n) => (makeInactive ? cur.add(n) : cur.delete(n)));
+      return { ...d, inactive: [...cur] };
+    });
+    if (!ok) return;
+    setSelected([]);
+    showToast(`${names.length}명을 ${makeInactive ? "미활동" : "활동"} 멤버로 바꿨어요`);
+  };
+
+  const removeSelected = async () => {
+    const names = selected;
     const ok = await saveChange((d) => ({
       ...d,
-      players: d.players.filter((n) => n !== name),
-      hidden: [...new Set([...(d.hidden || []), name])]
+      players: d.players.filter((n) => !names.includes(n)),
+      hidden: [...new Set([...(d.hidden || []), ...names])],
+      inactive: (d.inactive || []).filter((n) => !names.includes(n))
     }));
-    setConfirmRemove(null);
+    setConfirmBulkDel(false);
     if (!ok) return;
-    showToast(`${name} 선수를 명단에서 뺐어요`);
+    setSelected([]);
+    showToast(`${names.length}명을 명단에서 뺐어요`);
   };
+
 
   const arrow = (k) => (sortKey === k ? (sortDir === -1 ? " ▾" : " ▴") : "");
   const headSort = (k) => {
@@ -529,7 +557,9 @@ export default function App() {
   };
 
   const allPlayers = data ? [...new Set([...(sheet ? sheet.players.map((p) => p.name) : []), ...data.players])].filter((n) => !hidden.has(n)) : [];
-  const filteredRoster = allPlayers.filter((n) => n.includes(query.trim()));
+  const filteredRoster = allPlayers
+    .filter((n) => showInactiveInput || !inactive.has(n) || form.attendees.includes(n))
+    .filter((n) => n.includes(query.trim()));
 
   if (loading) {
     return (
@@ -558,7 +588,7 @@ export default function App() {
             <div className="rec"><dt>매치</dt><dd>{teamRecord.matchDays}</dd></div>
             <div className="rec"><dt>게임</dt><dd>{teamRecord.games}</dd></div>
             <div className="rec"><dt>득실</dt><dd>{teamRecord.gf}:{teamRecord.ga}</dd></div>
-            <div className="rec"><dt>선수단</dt><dd>{stats.length}</dd></div>
+            <div className="rec"><dt>활동 선수</dt><dd>{activeStats.length}</dd></div>
           </dl>
         </div>
       </header>
@@ -598,10 +628,10 @@ export default function App() {
                 </tr>
               </thead>
               <tbody>
-                {sorted.map((s, i) => (
-                  <tr key={s.name} className={i < 3 && sortKey === "points" && sortDir === -1 ? "top" : ""}>
+                {shown.map((s, i) => (
+                  <tr key={s.name} className={[i < 3 && sortKey === "points" && sortDir === -1 && !inactive.has(s.name) ? "top" : "", inactive.has(s.name) ? "rest" : ""].join(" ")}>
                     <td className="rank-col">{i + 1}</td>
-                    <td className="name-col">{s.name}</td>
+                    <td className="name-col">{s.name}{inactive.has(s.name) && <span className="rest-tag">미활동</span>}</td>
                     <td className="strong">{s.points}</td>
                     <td>{s.g}</td>
                     <td>{s.a}</td>
@@ -615,37 +645,64 @@ export default function App() {
             </table>
           </div>
           <p className="note">{sheet ? "개인 기록은 팀 구글 시트 기준이며, 시트를 고치면 자동으로 반영돼요." : "시트를 불러오지 못해 앱에 입력된 기록으로 계산했어요."} 열 제목을 누르면 정렬돼요.</p>
+          {inactive.size > 0 && (
+            <button className="link-btn" onClick={() => setShowInactive(!showInactive)}>
+              {showInactive ? "미활동 멤버 숨기기" : `미활동 멤버 ${[...inactive].filter((n) => stats.some((p) => p.name === n)).length}명도 보기`}
+            </button>
+          )}
 
           <div className="manage">
-            <button className="manage-toggle" onClick={() => { setManage(!manage); setConfirmRemove(null); }} aria-expanded={manage}>
-              <span>선수 명단 관리</span><span className="manage-count">{stats.length}명 {manage ? "▴" : "▾"}</span>
+            <button className="manage-toggle" onClick={() => { setManage(!manage); setSelected([]); setConfirmBulkDel(false); }} aria-expanded={manage}>
+              <span>선수 명단 관리</span><span className="manage-count">활동 {activeStats.length} · 미활동 {stats.length - activeStats.length} {manage ? "▴" : "▾"}</span>
             </button>
-            {manage && (
-              <div className="manage-body">
-                <div className="add-player">
-                  <input value={newPlayer} onChange={(e) => setNewPlayer(e.target.value)} placeholder="새 선수 이름"
-                    onKeyDown={(e) => e.key === "Enter" && addPlayer()} />
-                  <button onClick={addPlayer}>추가</button>
+            {manage && (() => {
+              const list = [...stats].sort((x, y) => x.name.localeCompare(y.name, "ko"))
+                .filter((p) => rosterFilter === "all" || (rosterFilter === "inactive") === inactive.has(p.name));
+              const allOn = list.length > 0 && list.every((p) => selected.includes(p.name));
+              return (
+                <div className="manage-body">
+                  <div className="add-player">
+                    <input value={newPlayer} onChange={(e) => setNewPlayer(e.target.value)} placeholder="새 선수 이름"
+                      onKeyDown={(e) => e.key === "Enter" && addPlayer()} />
+                    <button onClick={addPlayer}>추가</button>
+                  </div>
+                  <div className="seg-mini">
+                    {[["all", `전체 ${stats.length}`], ["active", `활동 ${activeStats.length}`], ["inactive", `미활동 ${stats.length - activeStats.length}`]].map(([k, l]) => (
+                      <button key={k} className={rosterFilter === k ? "on" : ""} onClick={() => { setRosterFilter(k); setSelected([]); setConfirmBulkDel(false); }}>{l}</button>
+                    ))}
+                  </div>
+                  <p className="manage-hint">선수를 체크한 뒤 아래 버튼으로 상태를 바꾸세요. 미활동 멤버는 기록이 그대로 남고, 순위표와 참석 선택에서만 숨겨져요.</p>
+                  <button className="select-all" onClick={() => setSelected(allOn ? [] : list.map((p) => p.name))}>{allOn ? "선택 해제" : "모두 선택"}</button>
+                  <div className="roster-rows">
+                    {list.map((p) => (
+                      <label className={`roster-row ${selected.includes(p.name) ? "sel" : ""}`} key={p.name}>
+                        <input type="checkbox" checked={selected.includes(p.name)} onChange={() => toggleSelect(p.name)} />
+                        <span className="rn">{p.name}</span>
+                        {inactive.has(p.name) ? <span className="rest-tag">미활동</span> : <span className="act-tag">활동</span>}
+                      </label>
+                    ))}
+                    {!list.length && <p className="manage-hint">해당하는 선수가 없어요.</p>}
+                  </div>
+                  {selected.length > 0 && (
+                    <div className="bulk-bar">
+                      <span className="bulk-n">{selected.length}명 선택</span>
+                      {confirmBulkDel ? (
+                        <>
+                          <button className="danger" onClick={removeSelected}>정말 삭제</button>
+                          <button onClick={() => setConfirmBulkDel(false)}>취소</button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => setStatus(true)}>미활동으로</button>
+                          <button onClick={() => setStatus(false)}>활동으로</button>
+                          <button className="danger-ghost" onClick={() => setConfirmBulkDel(true)}>삭제</button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <p className="manage-hint">이름 옆 ×를 누르면 명단에서 빠집니다. 지난 매치 기록에는 이름이 그대로 남아요.</p>
-                <div className="roster-list">
-                  {[...stats].sort((x, y) => x.name.localeCompare(y.name, "ko")).map((p) => (
-                    confirmRemove === p.name ? (
-                      <div className="roster-item confirm" key={p.name}>
-                        <span>{p.name} 삭제?</span>
-                        <button className="yes" onClick={() => removePlayer(p.name)}>삭제</button>
-                        <button className="no" onClick={() => setConfirmRemove(null)}>취소</button>
-                      </div>
-                    ) : (
-                      <div className="roster-item" key={p.name}>
-                        <span>{p.name}</span>
-                        <button className="x" aria-label={`${p.name} 삭제`} onClick={() => setConfirmRemove(p.name)}>×</button>
-                      </div>
-                    )
-                  ))}
-                </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
         </section>
       )}
@@ -689,9 +746,14 @@ export default function App() {
           </div>
           <div className="chip-grid">
             {filteredRoster.map((n) => (
-              <button key={n} className={form.attendees.includes(n) ? "chip on" : "chip"} onClick={() => toggleAttendee(n)}>{n}</button>
+              <button key={n} className={[form.attendees.includes(n) ? "chip on" : "chip", inactive.has(n) ? "rest" : ""].join(" ")} onClick={() => toggleAttendee(n)}>{n}</button>
             ))}
           </div>
+          {inactive.size > 0 && (
+            <button className="link-btn" onClick={() => setShowInactiveInput(!showInactiveInput)}>
+              {showInactiveInput ? "미활동 멤버 숨기기" : "미활동 멤버도 보기"}
+            </button>
+          )}
 
           {/* 쿼터별 포메이션 전술판 전용 배치 탭 영역 */}
           <div className="section-label">당일 쿼터별 라인업 전술판</div>
@@ -895,6 +957,28 @@ td.dim { color: var(--ink-3); }
 .manage-count { font-size: 13px; font-weight: 500; color: var(--ink-2); }
 .manage-body { padding: 0 14px 14px; border-top: 1px solid var(--line-2); }
 .manage-hint { font-size: 12.5px; color: var(--ink-2); margin: 10px 0; line-height: 1.5; }
+.seg-mini { display: flex; gap: 4px; background: var(--line-2); padding: 3px; border-radius: 10px; margin-top: 12px; }
+.seg-mini button { flex: 1; border: 0; background: none; padding: 7px 0; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+.seg-mini button.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(20,33,27,.1); }
+.select-all { border: 0; background: none; color: var(--grass); font-size: 13px; font-weight: 600; padding: 2px 0 6px; }
+.roster-rows { display: flex; flex-direction: column; }
+.roster-row { display: flex; align-items: center; gap: 12px; padding: 10px 4px; border-bottom: 1px solid var(--line-2); cursor: pointer; }
+.roster-row:last-child { border-bottom: 0; }
+.roster-row input { width: 20px; height: 20px; accent-color: var(--pitch); margin: 0; flex: none; }
+.roster-row .rn { flex: 1; font-size: 15px; font-weight: 600; }
+.roster-row.sel { background: var(--chalk); border-radius: 8px; }
+.act-tag, .rest-tag { font-size: 11.5px; font-weight: 700; padding: 2px 7px; border-radius: 6px; margin-left: 6px; }
+.act-tag { background: var(--win-soft); color: var(--win); }
+.rest-tag { background: var(--draw-soft); color: var(--draw); }
+tr.rest td { color: var(--ink-3); }
+tr.rest .name-col { color: var(--ink-2); }
+.chip.rest { border-style: dashed; }
+.link-btn { border: 0; background: none; color: var(--grass); font-size: 13px; font-weight: 600; padding: 8px 2px 0; }
+.bulk-bar { position: sticky; bottom: calc(env(safe-area-inset-bottom, 0px) + 10px); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 12px; background: var(--ink); color: #fff; padding: 10px 10px 10px 14px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.2); }
+.bulk-n { font-size: 13.5px; font-weight: 700; margin-right: auto; }
+.bulk-bar button { border: 0; border-radius: 8px; padding: 7px 10px; font-size: 13px; font-weight: 600; background: rgba(255,255,255,.14); color: #fff; }
+.bulk-bar .danger { background: var(--loss); }
+.bulk-bar .danger-ghost { color: #F3A79F; }
 .roster-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .roster-item { display: inline-flex; align-items: center; gap: 2px; padding: 4px 4px 4px 12px; border: 1px solid var(--line); border-radius: 999px; font-size: 14px; background: var(--chalk); }
 .roster-item .x { border: 0; background: none; width: 28px; height: 28px; border-radius: 50%; color: var(--ink-3); font-size: 17px; line-height: 1; }
