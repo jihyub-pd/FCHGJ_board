@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 
 // ===== Supabase 프로젝트 정보 입력 =====
 const SUPABASE_URL = "https://ozhdfewlboheqpcvbqgz.supabase.co";
@@ -132,6 +132,7 @@ const emptySched = () => ({ date: todayStr(), time: "", opponent: "", place: "",
 
 const emptyForm = () => ({
   scheduleId: null,
+  editId: null,
   date: todayStr(),
   opponent: "",
   games: [{ our: "", opp: "" }],
@@ -157,6 +158,10 @@ export default function App() {
   const [sortKey, setSortKey] = useState("points");
   const [sortDir, setSortDir] = useState(-1);
   const [toast, setToast] = useState("");
+  const [busy, setBusy] = useState(false);          // 저장 중 (연타 방지)
+  const busyRef = useRef(false);
+  const [playerView, setPlayerView] = useState(null); // 선수 개인 페이지
+  const [backups, setBackups] = useState(null);       // 되돌리기 목록 (null이면 닫힘)
   const [expanded, setExpanded] = useState(null);
   const [confirmDel, setConfirmDel] = useState(null);
   const [newPlayer, setNewPlayer] = useState("");
@@ -218,6 +223,8 @@ export default function App() {
 
   // 저장: 최신 기록을 먼저 받아와서 내 변경만 반영한 뒤 저장 (동시에 입력해도 서로 덮어쓰지 않음)
   const saveChange = async (mutate) => {
+    if (busyRef.current) return false;   // 이미 저장 중이면 무시 (두 번 저장 방지)
+    busyRef.current = true; setBusy(true);
     try {
       const latest = await loadLatest();
       const next = mutate(latest);
@@ -232,7 +239,43 @@ export default function App() {
     } catch (e) {
       showToast("저장에 실패했어요. 인터넷 연결을 확인해 주세요.");
       return false;
+    } finally {
+      busyRef.current = false; setBusy(false);
     }
+  };
+
+  // 관리자 PIN 확인 (삭제·되돌리기에만 사용, 맞으면 이 기기에 기억)
+  const requirePin = async () => {
+    let pin = "";
+    try { pin = localStorage.getItem("fc-admin-pin") || ""; } catch (e) {}
+    if (!pin) pin = (window.prompt("삭제하려면 관리자 PIN을 입력하세요") || "").trim();
+    if (!pin) return false;
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/fc_check_pin`, {
+        method: "POST", headers: { ...HEADERS, "Content-Type": "application/json" }, body: JSON.stringify({ p_pin: pin })
+      });
+      const ok = res.ok && (await res.json()) === true;
+      if (ok) { try { localStorage.setItem("fc-admin-pin", pin); } catch (e) {} return true; }
+      try { localStorage.removeItem("fc-admin-pin"); } catch (e) {}
+      showToast("관리자 PIN이 맞지 않아요");
+      return false;
+    } catch (e) { showToast("PIN을 확인하지 못했어요. 인터넷 연결을 확인해 주세요."); return false; }
+  };
+
+  // 자동 백업 목록 불러오기 / 되돌리기
+  const openBackups = async () => {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/fc_backups?select=id,saved_at,content&order=id.desc&limit=30`, { headers: HEADERS });
+      if (!res.ok) throw new Error();
+      setBackups(await res.json());
+    } catch (e) { showToast("백업 목록을 불러오지 못했어요"); }
+  };
+  const restoreBackup = async (b) => {
+    if (!(await requirePin())) return;
+    const ok = await saveChange(() => b.content);
+    if (!ok) return;
+    setBackups(null);
+    showToast("선택한 시점으로 되돌렸어요. 되돌리기 전 상태도 백업에 남아 있어요.");
   };
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 2600); };
@@ -374,8 +417,9 @@ export default function App() {
 
   const saveMatch = async () => {
     if (!canSave) return;
+    const editId = form.editId;
     const match = {
-      id: Date.now().toString(36),
+      id: editId || Date.now().toString(36),
       date: form.date,
       opponent: form.opponent.trim(),
       games: formGames.map((x) => ({ our: Number(x.our), opp: Number(x.opp) })),
@@ -388,13 +432,34 @@ export default function App() {
     const sid = form.scheduleId;
     const ok = await saveChange((d) => ({
       ...d,
-      matches: [...d.matches, match].sort((a, b) => a.date.localeCompare(b.date)),
+      matches: (editId
+        ? d.matches.map((m) => (m.id === editId ? { ...m, ...match } : m))   // 수정: 영상 등 기존 정보 유지
+        : [...d.matches, match]).sort((a, b) => a.date.localeCompare(b.date)),
       schedule: (d.schedule || []).filter((x) => x.id !== sid)
     }));
     if (!ok) return;
     setForm(emptyForm());
-    setTab("board");
-    showToast("매치 기록을 저장했어요");
+    setTab(editId ? "log" : "board");
+    if (editId) setMatchSeg("past");
+    showToast(editId ? "매치를 수정했어요" : "매치 기록을 저장했어요");
+  };
+
+  const startEditMatch = (m) => {
+    const base = emptyForm();
+    setForm({
+      ...base,
+      editId: m.id,
+      date: m.date,
+      opponent: m.opponent || "",
+      games: (m.games && m.games.length ? m.games : [{ our: "", opp: "" }]).map((g) => ({ our: String(g.our), opp: String(g.opp) })),
+      attendees: [...(m.attendees || [])],
+      goals: { ...(m.goals || {}) },
+      assists: { ...(m.assists || {}) },
+      mom: m.mom || null,
+      formations: { ...base.formations, ...(m.formations || {}) }
+    });
+    setTab("input");
+    window.scrollTo(0, 0);
   };
 
   // ---------- 경기 일정 ----------
@@ -416,6 +481,7 @@ export default function App() {
   };
 
   const deleteSchedule = async (id) => {
+    if (!(await requirePin())) return;
     const ok = await saveChange((d) => ({ ...d, schedule: (d.schedule || []).filter((x) => x.id !== id) }));
     setConfirmSched(null);
     if (ok) showToast("일정을 삭제했어요");
@@ -427,6 +493,13 @@ export default function App() {
     window.scrollTo(0, 0);
     showToast("일정 정보를 불러왔어요. 스코어와 참석 선수를 입력해 주세요.");
   };
+
+  // 전에 입력한 상대팀 이름 (자동완성용, 같은 팀은 최근 표기 하나만)
+  const opponents = useMemo(() => {
+    const map = new Map();
+    [...(data ? data.matches : []), ...schedule].forEach((m) => { const k = normTeam(m.opponent); if (k) map.set(k, m.opponent.trim()); });
+    return [...map.values()].sort((a, b) => a.localeCompare(b, "ko"));
+  }, [data, schedule]);
 
   // ---------- 상대 전적 ----------
   const h2h = (opp) => {
@@ -486,19 +559,20 @@ export default function App() {
                     <label className="field"><span>시간</span><input type="time" value={schedForm.time} onChange={(e) => setSchedForm({ ...schedForm, time: e.target.value })} /></label>
                   </div>
                   <div className="field-row">
-                    <label className="field"><span>상대팀</span><input value={schedForm.opponent} placeholder="예: FC 상암" onChange={(e) => setSchedForm({ ...schedForm, opponent: e.target.value })} /></label>
+                    <label className="field"><span>상대팀</span><input value={schedForm.opponent} placeholder="예: FC 상암" list="opp-list" autoComplete="off" onChange={(e) => setSchedForm({ ...schedForm, opponent: e.target.value })} /></label>
                     <label className="field"><span>장소</span><input value={schedForm.place} placeholder="예: 망원 유수지" onChange={(e) => setSchedForm({ ...schedForm, place: e.target.value })} /></label>
                   </div>
                   {schedForm.opponent.trim() && <H2H opp={schedForm.opponent} />}
                   <label className="field" style={{ marginTop: 8 }}><span>메모</span><input value={schedForm.memo} placeholder="예: 원정, 흰 유니폼, 회비 1만 원" onChange={(e) => setSchedForm({ ...schedForm, memo: e.target.value })} /></label>
                   <div className="sched-actions">
                     <button className="ghost-btn" onClick={() => setSchedForm(null)}>취소</button>
-                    <button className="solid-btn" onClick={addSchedule}>{schedForm.id ? "수정 저장" : "일정 추가"}</button>
+                    <button className="solid-btn" disabled={busy} onClick={addSchedule}>{schedForm.id ? "수정 저장" : "일정 추가"}</button>
                   </div>
                 </div>
   );
 
   const deleteMatch = async (id) => {
+    if (!(await requirePin())) return;
     const ok = await saveChange((d) => ({ ...d, matches: d.matches.filter((m) => m.id !== id) }));
     setConfirmDel(null);
     if (!ok) return;
@@ -537,6 +611,7 @@ export default function App() {
   };
 
   const removeSelected = async () => {
+    if (!(await requirePin())) return;
     const names = selected;
     const ok = await saveChange((d) => ({
       ...d,
@@ -755,7 +830,7 @@ export default function App() {
         <section>
           <div className="podium">
             {podium.map((p, i) => (
-              <div className={`pod pod-${i + 1}`} key={p.name}>
+              <div className={`pod pod-${i + 1}`} key={p.name} role="button" tabIndex={0} onClick={() => setPlayerView(p.name)}>
                 <span className="pod-rank">{i + 1}</span>
                 <span className="pod-name">{p.name}</span>
                 <span className="pod-pts">{p.points}<small>P</small></span>
@@ -782,7 +857,7 @@ export default function App() {
                 {shown.map((s, i) => (
                   <tr key={s.name} className={[i < 3 && sortKey === "points" && sortDir === -1 && !inactive.has(s.name) ? "top" : "", inactive.has(s.name) ? "rest" : ""].join(" ")}>
                     <td className="rank-col">{i + 1}</td>
-                    <td className="name-col">{s.name}{inactive.has(s.name) && <span className="rest-tag">미활동</span>}</td>
+                    <td className="name-col"><button className="name-btn" onClick={() => setPlayerView(s.name)}>{s.name}</button>{inactive.has(s.name) && <span className="rest-tag">미활동</span>}</td>
                     <td className="strong">{s.points}</td>
                     <td>{s.g}</td>
                     <td>{s.a}</td>
@@ -855,12 +930,17 @@ export default function App() {
               );
             })()}
           </div>
+          <button className="link-btn" style={{ marginTop: 14 }} onClick={openBackups}>기록 되돌리기 (자동 백업)</button>
         </section>
       )}
 
       {/* ---------- 매치 입력 ---------- */}
       {tab === "input" && (
         <section className="form">
+          {form.editId && (
+            <div className="from-sched">지난 매치를 수정하고 있어요. 영상과 다른 정보는 그대로 유지돼요.
+              <button onClick={() => { setForm(emptyForm()); setTab("log"); setMatchSeg("past"); }}>수정 취소</button></div>
+          )}
           {form.scheduleId && (
             <div className="from-sched">예정 경기의 결과를 입력 중이에요. 저장하면 예정 목록에서 지난 경기로 옮겨져요.
               <button onClick={() => setForm(emptyForm())}>새 매치로</button></div>
@@ -872,7 +952,7 @@ export default function App() {
             </label>
             <label className="field">
               <span>상대팀 (선택)</span>
-              <input value={form.opponent} placeholder="예: 윤상현팀" onChange={(e) => setForm({ ...form, opponent: e.target.value })} />
+              <input value={form.opponent} placeholder="예: 윤상현팀" list="opp-list" autoComplete="off" onChange={(e) => setForm({ ...form, opponent: e.target.value })} />
             </label>
           </div>
           {form.opponent.trim() && <H2H opp={form.opponent} />}
@@ -951,8 +1031,8 @@ export default function App() {
             </>
           )}
 
-          <button className="save" disabled={!canSave} onClick={saveMatch}>
-            {canSave ? "매치 저장" : "스코어와 참석 선수를 입력하면 저장할 수 있어요"}
+          <button className="save" disabled={!canSave || busy} onClick={saveMatch}>
+            {busy ? "저장 중…" : !canSave ? "스코어와 참석 선수를 입력하면 저장할 수 있어요" : form.editId ? "수정 저장" : "매치 저장"}
           </button>
         </section>
       )}
@@ -1064,7 +1144,7 @@ export default function App() {
                         <div className="vid-add">
                           <input value={(vidInput[m.id] || {}).url || ""} placeholder="영상 링크 (유튜브, 드라이브 등)" onChange={(e) => setVidInput({ ...vidInput, [m.id]: { ...(vidInput[m.id] || {}), url: e.target.value } })} />
                           <input value={(vidInput[m.id] || {}).label || ""} placeholder="이름 (예: 1쿼터, 하이라이트)" onChange={(e) => setVidInput({ ...vidInput, [m.id]: { ...(vidInput[m.id] || {}), label: e.target.value } })} />
-                          <button className="solid-btn" onClick={() => addVideo(m.id)}>영상 추가</button>
+                          <button className="solid-btn" disabled={busy} onClick={() => addVideo(m.id)}>영상 추가</button>
                         </div>
                       </div>
                       
@@ -1097,7 +1177,10 @@ export default function App() {
                           </div>
                         </div>
                       ) : (
-                        <button className="del" onClick={() => setConfirmDel(m.id)}>매치 삭제</button>
+                        <div className="log-actions">
+                          <button className="ghost-btn sm" onClick={() => startEditMatch(m)}>매치 수정</button>
+                          <button className="del" onClick={() => setConfirmDel(m.id)}>매치 삭제</button>
+                        </div>
                       )}
                     </div>
                   )}
@@ -1107,6 +1190,124 @@ export default function App() {
           </div>
           </>)}
         </section>
+      )}
+
+      <datalist id="opp-list">{opponents.map((o) => <option key={o} value={o} />)}</datalist>
+
+      {/* ---------- 선수 개인 페이지 ---------- */}
+      {playerView && (() => {
+        const name = playerView;
+        const st = stats.find((p) => p.name === name) || { att: 0, g: 0, a: 0, mom: 0, points: 0, rate: 0, cs: 0 };
+        const POSN = { referee: "심판", ST: "ST", LM: "LM", CAM: "CAM", RM: "RM", CM1: "CM", CM2: "CM", LB: "LB", CB1: "CB", CB2: "CB", RB: "RB", GK: "GK" };
+        const ms = data.matches.filter((m) => (m.attendees || []).includes(name)).slice().reverse();
+        let quarters = 0, refs = 0; const posCount = {};
+        data.matches.forEach((m) => Object.values(m.formations || {}).forEach((q) => Object.entries(q || {}).forEach(([k, v]) => {
+          if (v !== name) return;
+          if (k === "referee") { refs++; return; }
+          quarters++; const lab = POSN[k] || k; posCount[lab] = (posCount[lab] || 0) + 1;
+        })));
+        const posList = Object.entries(posCount).sort((a, b) => b[1] - a[1]);
+        const vids = ms.flatMap((m) => (m.videos || []).map((v) => ({ ...v, m })));
+        const appGoals = ms.reduce((t, m) => t + ((m.goals || {})[name] || 0), 0);
+        const appAssists = ms.reduce((t, m) => t + ((m.assists || {})[name] || 0), 0);
+        return (
+          <div className="pp" role="dialog" aria-modal="true" aria-label={`${name} 선수 기록`}>
+            <div className="pp-in">
+              <div className="pp-top">
+                <button className="pp-back" onClick={() => { setPlayerView(null); setPlaying(null); }}>← 순위표</button>
+              </div>
+              <div className="pp-head">
+                <div className="pp-name">{name}</div>
+                {inactive.has(name) ? <span className="rest-tag">미활동</span> : <span className="act-tag">활동</span>}
+              </div>
+              <div className="pp-grid">
+                <div><b>{st.points}</b><span>공격P</span></div>
+                <div><b>{st.g}</b><span>득점</span></div>
+                <div><b>{st.a}</b><span>도움</span></div>
+                <div><b>{st.mom}</b><span>MOM</span></div>
+                <div><b>{st.att}</b><span>출석</span></div>
+                <div><b>{st.rate}%</b><span>출석률</span></div>
+              </div>
+              <p className="note">{sheet ? "위 숫자는 팀 구글 시트 기준 통산 기록이에요." : "위 숫자는 앱에 입력된 기록으로 계산했어요."} 아래는 앱에 입력된 경기 기준이에요.</p>
+
+              <div className="section-label sub-title">출전 쿼터</div>
+              {quarters + refs === 0 ? <p className="note">전술판에 배치된 기록이 아직 없어요.</p> : (
+                <div className="pp-box">
+                  <div className="pp-q"><b>{quarters}</b>쿼터 출전{refs > 0 && <span> · 심판 {refs}회</span>}</div>
+                  <div className="pos-bars">
+                    {posList.map(([p, c]) => (
+                      <div className="pos-bar" key={p}><span className="pb-l">{p}</span><span className="pb-t"><i style={{ width: `${Math.round((c / quarters) * 100)}%` }} /></span><span className="pb-n">{c}</span></div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="section-label sub-title">참석한 경기 <span className="sub">{ms.length}경기 · 앱 기록 {appGoals}골 {appAssists}도움</span></div>
+              {ms.length === 0 ? <p className="note">앱에 입력된 참석 경기가 없어요.</p> : (
+                <div className="pp-list">
+                  {ms.map((m) => {
+                    const g = (m.goals || {})[name] || 0, a = (m.assists || {})[name] || 0;
+                    const qn = Object.values(m.formations || {}).filter((q) => Object.entries(q || {}).some(([k, v]) => k !== "referee" && v === name)).length;
+                    return (
+                      <div className="pp-row" key={m.id}>
+                        <div className="pp-row-top"><span className="log-date">{fmtDate(m.date)}</span>{m.opponent && <span className="opp">vs {m.opponent}</span>}</div>
+                        <div className="games-line">{validGames(m).map(gameBadge)}</div>
+                        <div className="pp-row-meta">
+                          {g > 0 && <span>⚽ {g}골</span>}{a > 0 && <span>🅰 {a}도움</span>}{m.mom === name && <span className="mom-t">★ MOM</span>}
+                          {qn > 0 && <span>{qn}쿼터</span>}{g + a === 0 && m.mom !== name && qn === 0 && <span className="dim-t">출석</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {vids.length > 0 && (<>
+                <div className="section-label sub-title">나온 경기 영상 <span className="sub">{vids.length}개</span></div>
+                <div className="videos">
+                  {vids.map((v) => {
+                    const emb = ytEmbed(v.url);
+                    return (
+                      <div className="video" key={v.id}>
+                        {emb && playing === v.id && <div className="player"><iframe src={emb + (emb.includes("?") ? "&" : "?") + "autoplay=1"} title={v.label || "경기 영상"} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen /></div>}
+                        <div className="video-row">
+                          <span className="v-label">{fmtDate(v.m.date)} · {v.label || "영상"}</span>
+                          {emb ? <button className="solid-btn sm" onClick={() => setPlaying(playing === v.id ? null : v.id)}>{playing === v.id ? "닫기" : "▶ 재생"}</button>
+                               : <a className="solid-btn sm" href={v.url} target="_blank" rel="noopener noreferrer">열기</a>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>)}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ---------- 되돌리기 ---------- */}
+      {backups && (
+        <div className="pp" role="dialog" aria-modal="true" aria-label="기록 되돌리기">
+          <div className="pp-in">
+            <div className="pp-top"><button className="pp-back" onClick={() => setBackups(null)}>← 닫기</button></div>
+            <div className="pp-name" style={{ marginTop: 6 }}>기록 되돌리기</div>
+            <p className="note">기록이 바뀔 때마다 바로 전 상태가 자동으로 저장돼요(최근 300개). 실수로 지웠다면 지우기 전 시점을 골라 되돌리세요. 관리자 PIN이 필요해요.</p>
+            <div className="pp-list">
+              {backups.map((b) => {
+                const c = b.content || {};
+                const t = new Date(b.saved_at);
+                return (
+                  <div className="pp-row" key={b.id}>
+                    <div className="pp-row-top"><span className="log-date">{t.getMonth() + 1}월 {t.getDate()}일 {String(t.getHours()).padStart(2, "0")}:{String(t.getMinutes()).padStart(2, "0")}</span></div>
+                    <div className="pp-row-meta"><span>매치 {(c.matches || []).length}</span><span>일정 {(c.schedule || []).length}</span><span>명단 {(c.players || []).length}</span></div>
+                    <button className="ghost-btn sm" style={{ marginTop: 8 }} disabled={busy} onClick={() => restoreBackup(b)}>이 시점으로 되돌리기</button>
+                  </div>
+                );
+              })}
+              {!backups.length && <p className="note">아직 백업이 없어요.</p>}
+            </div>
+          </div>
+        </div>
       )}
 
       {toast && <div className="toast">{toast}</div>}
@@ -1191,6 +1392,36 @@ td.dim { color: var(--ink-3); }
 .manage-count { font-size: 13px; font-weight: 500; color: var(--ink-2); }
 .manage-body { padding: 0 14px 14px; border-top: 1px solid var(--line-2); }
 .manage-hint { font-size: 12.5px; color: var(--ink-2); margin: 10px 0; line-height: 1.5; }
+.name-btn { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: inherit; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 3px; cursor: pointer; }
+.pod { cursor: pointer; }
+.log-actions { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+.log-actions .del { margin-top: 0; }
+button:disabled { opacity: .55; cursor: default; }
+.pp { position: fixed; inset: 0; z-index: 30; background: var(--chalk); overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.pp-in { max-width: 760px; margin: 0 auto; padding: calc(env(safe-area-inset-top, 0px) + 10px) 16px calc(env(safe-area-inset-bottom, 0px) + 40px); }
+.pp-top { position: sticky; top: 0; background: var(--chalk); padding: 6px 0; z-index: 1; }
+.pp-back { border: 0; background: none; font-size: 14.5px; font-weight: 600; color: var(--grass); padding: 6px 0; }
+.pp-head { display: flex; align-items: center; gap: 4px; margin-top: 4px; }
+.pp-name { font-size: 28px; font-weight: 800; letter-spacing: -0.03em; }
+.pp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+.pp-grid div { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; }
+.pp-grid b { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; line-height: 1.1; }
+.pp-grid span { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+.pp-box { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; }
+.pp-q { font-size: 14px; color: var(--ink-2); }
+.pp-q b { font-size: 22px; color: var(--ink); margin-right: 3px; }
+.pos-bars { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.pos-bar { display: grid; grid-template-columns: 44px 1fr 24px; align-items: center; gap: 8px; font-size: 13px; }
+.pb-l { font-weight: 700; color: var(--ink-2); }
+.pb-t { height: 8px; background: var(--line-2); border-radius: 4px; overflow: hidden; }
+.pb-t i { display: block; height: 100%; background: var(--grass); border-radius: 4px; }
+.pb-n { text-align: right; font-weight: 700; }
+.pp-list { display: flex; flex-direction: column; gap: 8px; }
+.pp-row { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; }
+.pp-row-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.pp-row-meta { display: flex; flex-wrap: wrap; gap: 10px; font-size: 13px; margin-top: 8px; color: var(--ink); font-weight: 600; }
+.mom-t { color: var(--gold); }
+.dim-t { color: var(--ink-3); font-weight: 500; }
 .h2h { margin-top: 10px; background: var(--chalk); border-radius: 10px; padding: 10px 12px; }
 .h2h.first { font-size: 13px; color: var(--ink-2); }
 .h2h-top { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--ink-2); }
