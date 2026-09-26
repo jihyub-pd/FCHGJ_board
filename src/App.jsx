@@ -404,11 +404,15 @@ export default function App() {
   const addSchedule = async () => {
     const f = schedForm;
     if (!f || !f.date) return;
-    const item = { id: "s" + Date.now().toString(36), date: f.date, time: f.time, opponent: f.opponent.trim(), place: f.place.trim(), memo: f.memo.trim() };
-    const ok = await saveChange((d) => ({ ...d, schedule: [...(d.schedule || []), item] }));
+    const item = { id: f.id || "s" + Date.now().toString(36), date: f.date, time: f.time, opponent: f.opponent.trim(), place: f.place.trim(), memo: f.memo.trim() };
+    const editing = !!f.id;
+    const ok = await saveChange((d) => {
+      const list = d.schedule || [];
+      return { ...d, schedule: editing ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item] };
+    });
     if (!ok) return;
     setSchedForm(null);
-    showToast(`${fmtDate(item.date)} 경기 일정을 추가했어요`);
+    showToast(editing ? "일정을 수정했어요" : `${fmtDate(item.date)} 경기 일정을 추가했어요`);
   };
 
   const deleteSchedule = async (id) => {
@@ -474,6 +478,25 @@ export default function App() {
     setConfirmVid(null);
     if (ok) showToast("영상을 삭제했어요");
   };
+
+  const renderSchedForm = () => (
+                <div className="sched-form">
+                  <div className="field-row">
+                    <label className="field"><span>날짜</span><input type="date" value={schedForm.date} onChange={(e) => setSchedForm({ ...schedForm, date: e.target.value })} /></label>
+                    <label className="field"><span>시간</span><input type="time" value={schedForm.time} onChange={(e) => setSchedForm({ ...schedForm, time: e.target.value })} /></label>
+                  </div>
+                  <div className="field-row">
+                    <label className="field"><span>상대팀</span><input value={schedForm.opponent} placeholder="예: FC 상암" onChange={(e) => setSchedForm({ ...schedForm, opponent: e.target.value })} /></label>
+                    <label className="field"><span>장소</span><input value={schedForm.place} placeholder="예: 망원 유수지" onChange={(e) => setSchedForm({ ...schedForm, place: e.target.value })} /></label>
+                  </div>
+                  {schedForm.opponent.trim() && <H2H opp={schedForm.opponent} />}
+                  <label className="field" style={{ marginTop: 8 }}><span>메모</span><input value={schedForm.memo} placeholder="예: 원정, 흰 유니폼, 회비 1만 원" onChange={(e) => setSchedForm({ ...schedForm, memo: e.target.value })} /></label>
+                  <div className="sched-actions">
+                    <button className="ghost-btn" onClick={() => setSchedForm(null)}>취소</button>
+                    <button className="solid-btn" onClick={addSchedule}>{schedForm.id ? "수정 저장" : "일정 추가"}</button>
+                  </div>
+                </div>
+  );
 
   const deleteMatch = async (id) => {
     const ok = await saveChange((d) => ({ ...d, matches: d.matches.filter((m) => m.id !== id) }));
@@ -944,23 +967,8 @@ export default function App() {
 
           {matchSeg === "upcoming" && (
             <div>
-              {schedForm ? (
-                <div className="sched-form">
-                  <div className="field-row">
-                    <label className="field"><span>날짜</span><input type="date" value={schedForm.date} onChange={(e) => setSchedForm({ ...schedForm, date: e.target.value })} /></label>
-                    <label className="field"><span>시간</span><input type="time" value={schedForm.time} onChange={(e) => setSchedForm({ ...schedForm, time: e.target.value })} /></label>
-                  </div>
-                  <div className="field-row">
-                    <label className="field"><span>상대팀</span><input value={schedForm.opponent} placeholder="예: FC 상암" onChange={(e) => setSchedForm({ ...schedForm, opponent: e.target.value })} /></label>
-                    <label className="field"><span>장소</span><input value={schedForm.place} placeholder="예: 망원 유수지" onChange={(e) => setSchedForm({ ...schedForm, place: e.target.value })} /></label>
-                  </div>
-                  {schedForm.opponent.trim() && <H2H opp={schedForm.opponent} />}
-                  <label className="field" style={{ marginTop: 8 }}><span>메모</span><input value={schedForm.memo} placeholder="예: 원정, 흰 유니폼, 회비 1만 원" onChange={(e) => setSchedForm({ ...schedForm, memo: e.target.value })} /></label>
-                  <div className="sched-actions">
-                    <button className="ghost-btn" onClick={() => setSchedForm(null)}>취소</button>
-                    <button className="solid-btn" onClick={addSchedule}>일정 추가</button>
-                  </div>
-                </div>
+              {schedForm && !schedForm.id ? (
+                renderSchedForm()
               ) : (
                 <button className="add-sched" onClick={() => setSchedForm(emptySched())}>+ 경기 일정 추가</button>
               )}
@@ -968,6 +976,7 @@ export default function App() {
               <div className="log-list">
                 {schedule.map((x) => {
                   const n = dday(x.date);
+                  if (schedForm && schedForm.id === x.id) return <div key={x.id}>{renderSchedForm()}</div>;
                   return (
                     <div className={`sched-card ${n < 0 ? "overdue" : ""}`} key={x.id}>
                       <div className="sc-top">
@@ -981,8 +990,9 @@ export default function App() {
                         <div className="del-confirm"><span>이 일정을 삭제할까요?</span><span><button onClick={() => setConfirmSched(null)}>취소</button><button className="danger" onClick={() => deleteSchedule(x.id)}>삭제</button></span></div>
                       ) : (
                         <div className="sc-actions">
-                          <button className="solid-btn" onClick={() => startResult(x)}>결과 입력</button>
                           <button className="ghost-btn" onClick={() => setConfirmSched(x.id)}>삭제</button>
+                          <button className="ghost-btn" onClick={() => { setConfirmSched(null); setSchedForm({ id: x.id, date: x.date, time: x.time || "", opponent: x.opponent || "", place: x.place || "", memo: x.memo || "" }); }}>수정</button>
+                          <button className="solid-btn" onClick={() => startResult(x)}>결과 입력</button>
                         </div>
                       )}
                     </div>
