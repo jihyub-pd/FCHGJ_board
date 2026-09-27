@@ -27,11 +27,23 @@ const parseCSV = (text) => {
 
 const num = (v) => { const n = Number(String(v ?? "").replace(/[^0-9.-]/g, "")); return Number.isFinite(n) ? n : 0; };
 
+// 시트 기록이 반영된 마지막 날짜. 이 날짜 '이후'에 앱으로 입력한 경기는 시트 숫자 위에 자동으로 더해짐.
+// 시트에 '기준일' 칸을 만들고 옆에 날짜(예: 2026-09-23)를 적으면 그 값이 우선 적용됨.
+const SHEET_CUTOFF = "2026-09-23";
+const toISODate = (v) => {
+  const t = (v || "").trim(); if (!t) return "";
+  let m = t.match(/^(\d{4})[-./\s]+(\d{1,2})[-./\s]+(\d{1,2})/); if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  m = t.match(/^(\d{1,2})[/.\s월]+(\d{1,2})/); if (m) return `${SHEET_CUTOFF.slice(0, 4)}-${m[1].padStart(2, "0")}-${m[2].padStart(2, "0")}`;
+  return "";
+};
+
 // 시트 구조: '전체 매치 수' 옆 칸에 총 매치 수, '이름' 헤더 행 아래로 선수별 기록
 const readSheet = (text) => {
   const rows = parseCSV(text);
-  let totalMatches = null, head = -1, col = {};
+  let totalMatches = null, head = -1, col = {}, cutoff = "";
   rows.forEach((r, i) => {
+    const cu = r.findIndex((c) => c.replace(/\s/g, "") === "기준일");
+    if (cu >= 0 && !cutoff) cutoff = toISODate(r.slice(cu + 1).find((c) => c.trim() !== ""));
     const t = r.findIndex((c) => c.replace(/\s/g, "") === "전체매치수");
     if (t >= 0 && totalMatches === null) totalMatches = num(r.slice(t + 1).find((c) => c.trim() !== ""));
     if (head < 0) {
@@ -57,7 +69,7 @@ const readSheet = (text) => {
       cs: csRaw !== undefined && String(csRaw).trim() !== "" ? num(csRaw) : null,
     });
   }
-  return { totalMatches, players };
+  return { totalMatches, players, cutoff: cutoff || SHEET_CUTOFF };
 };
 
 const DB_ROW_ID = 1;
@@ -201,6 +213,8 @@ export default function App() {
   const [vidInput, setVidInput] = useState({});     // 매치별 영상 링크 입력값 { [matchId]: {url, label} }
   const [playing, setPlaying] = useState(null);     // 재생 중인 영상 id
   const [confirmVid, setConfirmVid] = useState(null);
+  const [vForm, setVForm] = useState(null);          // 영상 탭 추가 폼 (null이면 닫힘)
+  const [vFilter, setVFilter] = useState("");        // 영상 탭 검색
   const [showInactive, setShowInactive] = useState(false);     // 순위표에 미활동 포함
   const [showInactiveInput, setShowInactiveInput] = useState(false); // 참석 선택에 미활동 포함
   const [query, setQuery] = useState("");
@@ -322,16 +336,34 @@ export default function App() {
     if (!data) return [];
     // 1) 구글 시트가 있으면 시트 숫자를 그대로 사용 (전체 누적 기록)
     if (sheet) {
-      const total = sheet.totalMatches || 0;
-      const fromSheet = sheet.players.map((p) => ({
-        name: p.name, att: p.att, g: p.g, a: p.a, mom: p.mom,
-        cs: p.cs !== null ? p.cs : appCleanSheets(p.name),
-        points: p.points !== null ? p.points : p.g + p.a,
-        rate: p.rate !== null ? p.rate : (total ? Math.round((p.att / total) * 100) : 0),
-      }));
+      // 시트(기준일까지) + 기준일 이후 앱에 입력한 경기
+      const after = data.matches.filter((m) => m.date > sheet.cutoff);
+      const total = (sheet.totalMatches || 0) + after.length;
+      const add = (name) => {
+        const r = { att: 0, g: 0, a: 0, mom: 0, cs: 0 };
+        after.forEach((m) => {
+          if ((m.attendees || []).includes(name)) { r.att++; r.cs += validGames(m).filter((x) => Number(x.opp) === 0).length; }
+          r.g += (m.goals || {})[name] || 0;
+          r.a += (m.assists || {})[name] || 0;
+          if (m.mom === name) r.mom++;
+        });
+        return r;
+      };
+      const fromSheet = sheet.players.map((p) => {
+        const x = add(p.name);
+        const att = p.att + x.att, g = p.g + x.g, a = p.a + x.a;
+        return {
+          name: p.name, att, g, a, mom: p.mom + x.mom,
+          cs: p.cs !== null ? p.cs + x.cs : appCleanSheets(p.name),
+          points: (p.points !== null ? p.points : p.g + p.a) + x.g + x.a,
+          rate: total ? Math.round((att / total) * 100) : 0,
+        };
+      });
       const inSheet = new Set(fromSheet.map((p) => p.name));
-      const extra = data.players.filter((n) => !inSheet.has(n))
-        .map((name) => ({ name, att: 0, g: 0, a: 0, mom: 0, cs: 0, points: 0, rate: 0 }));
+      const extra = data.players.filter((n) => !inSheet.has(n)).map((name) => {
+        const x = add(name);
+        return { name, att: x.att, g: x.g, a: x.a, mom: x.mom, cs: appCleanSheets(name), points: x.g + x.a, rate: total ? Math.round((x.att / total) * 100) : 0 };
+      });
       return [...fromSheet, ...extra].filter((p) => !hidden.has(p.name));
     }
     // 2) 시트를 못 읽었을 때: 기존 방식 (기본 기록 + 앱 입력 매치)
@@ -380,7 +412,7 @@ export default function App() {
         if (o > p) t.w++; else if (o === p) t.d++; else t.l++;
       });
     });
-    if (sheet && sheet.totalMatches) t.matchDays = sheet.totalMatches;
+    if (sheet && sheet.totalMatches) t.matchDays = sheet.totalMatches + data.matches.filter((m) => m.date > sheet.cutoff).length;
     return t;
   }, [data, sheet]);
 
@@ -599,6 +631,44 @@ export default function App() {
   };
   const removeVideo = async (mid, vid) => {
     const ok = await saveChange((d) => ({ ...d, matches: d.matches.map((m) => (m.id === mid ? { ...m, videos: (m.videos || []).filter((x) => x.id !== vid) } : m)) }));
+    setConfirmVid(null);
+    if (ok) showToast("영상을 삭제했어요");
+  };
+
+  // ---------- 영상 탭 ----------
+  // 매치에 붙은 영상 + 매치와 상관없이 올린 영상(videoLog)을 한 목록으로
+  const allVideos = useMemo(() => {
+    if (!data) return [];
+    const fromMatches = data.matches.flatMap((m) => (m.videos || []).map((v) => ({ ...v, date: m.date, opponent: m.opponent || "", matchId: m.id })));
+    const free = (data.videoLog || []).map((v) => ({ ...v, matchId: null }));
+    return [...fromMatches, ...free].sort((a, b) => (b.date || "").localeCompare(a.date || "") || (a.id < b.id ? -1 : 1));
+  }, [data]);
+
+  const addVideoFree = async () => {
+    const f = vForm;
+    if (!f || !extractUrls(f.url).length) { showToast("영상 주소를 확인해 주세요 (https://로 시작)"); return; }
+    let added = 0;
+    const ok = await saveChange((d) => {
+      if (f.matchId) {
+        return { ...d, matches: d.matches.map((m) => {
+          if (m.id !== f.matchId) return m;
+          const items = makeVideos(f.url, f.label, (m.videos || []).length); added = items.length;
+          return { ...m, videos: [...(m.videos || []), ...items] };
+        }) };
+      }
+      const same = (d.videoLog || []).filter((v) => v.date === f.date).length;
+      const items = makeVideos(f.url, f.label, same).map((v) => ({ ...v, date: f.date, opponent: f.opponent.trim() }));
+      added = items.length;
+      return { ...d, videoLog: [...(d.videoLog || []), ...items] };
+    });
+    if (!ok) return;
+    setVForm(null);
+    showToast(`영상 ${added}개를 올렸어요`);
+  };
+
+  const removeAnyVideo = async (v) => {
+    if (v.matchId) return removeVideo(v.matchId, v.id);
+    const ok = await saveChange((d) => ({ ...d, videoLog: (d.videoLog || []).filter((x) => x.id !== v.id) }));
     setConfirmVid(null);
     if (ok) showToast("영상을 삭제했어요");
   };
@@ -872,7 +942,7 @@ export default function App() {
       </header>
 
       <nav className="tabs">
-        {[["home", "홈"], ["board", "순위표"], ["input", "매치 입력"], ["log", "경기 일정"]].map(([k, label]) => (
+        {[["home", "홈"], ["board", "순위표"], ["input", "매치 입력"], ["log", "경기 일정"], ["video", "영상"]].map(([k, label]) => (
           <button key={k} className={tab === k ? "tab on" : "tab"} onClick={() => setTab(k)}>{label}</button>
         ))}
       </nav>
@@ -1008,7 +1078,7 @@ export default function App() {
               </tbody>
             </table>
           </div>
-          <p className="note">{sheet ? "개인 기록은 팀 구글 시트 기준이며, 시트를 고치면 자동으로 반영돼요." : "시트를 불러오지 못해 앱에 입력된 기록으로 계산했어요."} 열 제목을 누르면 정렬돼요.</p>
+          <p className="note">{sheet ? `개인 기록 = 시트(${Number(sheet.cutoff.slice(5, 7))}/${Number(sheet.cutoff.slice(8))}까지) + 이후 앱에 입력한 경기. 앞으로는 앱에만 입력하면 돼요.` : "시트를 불러오지 못해 앱에 입력된 기록으로 계산했어요."} 열 제목을 누르면 정렬돼요.</p>
           {inactive.size > 0 && (
             <button className="link-btn" onClick={() => setShowInactive(!showInactive)}>
               {showInactive ? "미활동 멤버 숨기기" : `미활동 멤버 ${[...inactive].filter((n) => stats.some((p) => p.name === n)).length}명도 보기`}
@@ -1359,6 +1429,87 @@ export default function App() {
         </section>
       )}
 
+      {/* ---------- 영상 ---------- */}
+      {tab === "video" && (() => {
+        const q = vFilter.trim().toLowerCase();
+        const list = allVideos.filter((v) => !q || `${v.opponent} ${v.label} ${v.date}`.toLowerCase().includes(q));
+        const groups = [];
+        list.forEach((v) => {
+          const key = `${v.date}|${v.opponent}|${v.matchId || "free"}`;
+          const g = groups.find((x) => x.key === key);
+          if (g) g.items.push(v); else groups.push({ key, date: v.date, opponent: v.opponent, matchId: v.matchId, items: [v] });
+        });
+        const pastMatches = [...data.matches].sort((a, b) => b.date.localeCompare(a.date));
+        return (
+          <section>
+            {vForm ? (
+              <div className="sched-form">
+                <label className="field"><span>영상 링크</span>
+                  <textarea className="v-textarea" rows={3} value={vForm.url} placeholder={"유튜브, 드라이브 링크\n여러 개면 줄을 바꿔 붙여 넣기"} onChange={(e) => setVForm((f) => ({ ...f, url: e.target.value }))} />
+                </label>
+                <label className="field"><span>어느 경기 영상인가요?</span>
+                  <select value={vForm.matchId} onChange={(e) => setVForm((f) => ({ ...f, matchId: e.target.value }))}>
+                    <option value="">앱에 기록 없는 경기 (직접 입력)</option>
+                    {pastMatches.map((m) => <option key={m.id} value={m.id}>{fmtDate(m.date)} · {m.opponent ? `vs ${m.opponent}` : "상대 기록 없음"}</option>)}
+                  </select>
+                </label>
+                {!vForm.matchId && (
+                  <div className="field-row">
+                    <label className="field"><span>경기 날짜</span><input type="date" value={vForm.date} onChange={(e) => setVForm((f) => ({ ...f, date: e.target.value }))} /></label>
+                    <label className="field"><span>상대팀</span><input value={vForm.opponent} placeholder="모르면 비워 두기" list="opp-list" autoComplete="off" onChange={(e) => setVForm((f) => ({ ...f, opponent: e.target.value }))} /></label>
+                  </div>
+                )}
+                <label className="field"><span>이름</span><input value={vForm.label} placeholder="예: 1쿼터, 하이라이트 · 비우면 영상 1, 2…" onChange={(e) => setVForm((f) => ({ ...f, label: e.target.value }))} /></label>
+                <div className="sched-actions">
+                  <button className="ghost-btn" onClick={() => setVForm(null)}>취소</button>
+                  <button className="solid-btn" disabled={busy} onClick={addVideoFree}>{extractUrls(vForm.url).length > 1 ? `영상 ${extractUrls(vForm.url).length}개 올리기` : "영상 올리기"}</button>
+                </div>
+              </div>
+            ) : (
+              <button className="add-sched" onClick={() => setVForm({ url: "", label: "", matchId: "", date: todayStr(), opponent: "" })}>+ 영상 올리기</button>
+            )}
+
+            {allVideos.length > 0 && (
+              <input className="v-search" value={vFilter} onChange={(e) => setVFilter(e.target.value)} placeholder="상대팀, 날짜, 이름으로 찾기" />
+            )}
+            {allVideos.length === 0 && !vForm && <div className="empty">아직 올라온 영상이 없어요. 경기 영상 링크를 올려 보세요.</div>}
+            {allVideos.length > 0 && groups.length === 0 && <div className="empty">찾는 영상이 없어요.</div>}
+
+            <div className="log-list">
+              {groups.map((g) => (
+                <div className="v-group" key={g.key}>
+                  <div className="v-group-head">
+                    <span className="v-date">{g.date ? fmtDate(g.date) : "날짜 없음"}</span>
+                    <span className="v-opp">{normTeam(g.opponent) ? `vs ${g.opponent}` : "상대 기록 없음"}</span>
+                    {g.matchId
+                      ? <button className="v-link" onClick={() => { setTab("log"); setMatchSeg("past"); setExpanded(g.matchId); window.scrollTo(0, 0); }}>경기 기록 ›</button>
+                      : <span className="v-free">영상만</span>}
+                  </div>
+                  <div className="videos">
+                    {g.items.map((v) => {
+                      const emb = ytEmbed(v.url);
+                      return (
+                        <div className="video" key={v.id}>
+                          {emb && playing === v.id && <div className="player"><iframe src={emb + (emb.includes("?") ? "&" : "?") + "autoplay=1"} title={v.label || "경기 영상"} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen /></div>}
+                          <div className="video-row">
+                            <span className="v-label">{v.label || (emb ? "유튜브 영상" : "영상 링크")}</span>
+                            {emb ? <button className="solid-btn sm" onClick={() => setPlaying(playing === v.id ? null : v.id)}>{playing === v.id ? "닫기" : "▶ 재생"}</button>
+                                 : <a className="solid-btn sm" href={v.url} target="_blank" rel="noopener noreferrer">열기</a>}
+                            {confirmVid === v.id
+                              ? <><button className="ghost-btn sm danger-t" onClick={() => removeAnyVideo(v)}>삭제</button><button className="ghost-btn sm" onClick={() => setConfirmVid(null)}>취소</button></>
+                              : <button className="ghost-btn sm" aria-label="영상 삭제" onClick={() => setConfirmVid(v.id)}>×</button>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        );
+      })()}
+
       <datalist id="opp-list">{opponents.map((o) => <option key={o} value={o} />)}</datalist>
 
       {/* ---------- 선수 개인 페이지 ---------- */}
@@ -1395,7 +1546,7 @@ export default function App() {
                 <div><b>{st.att}</b><span>출석</span></div>
                 <div><b>{st.rate}%</b><span>출석률</span></div>
               </div>
-              <p className="note">{sheet ? "위 숫자는 팀 구글 시트 기준 통산 기록이에요." : "위 숫자는 앱에 입력된 기록으로 계산했어요."} 아래는 앱에 입력된 경기 기준이에요.</p>
+              <p className="note">{sheet ? "위 숫자는 시트 통산 기록에 이후 앱 입력 경기를 더한 값이에요." : "위 숫자는 앱에 입력된 기록으로 계산했어요."} 아래는 앱에 입력된 경기 기준이에요.</p>
 
               <div className="section-label sub-title">출전 쿼터</div>
               {quarters + refs === 0 ? <p className="note">전술판에 배치된 기록이 아직 없어요.</p> : (
@@ -1567,7 +1718,16 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 
 /* tabs */
 .tabs { display: flex; gap: 4px; margin: 0; padding: 10px 16px; position: sticky; top: 0; z-index: 5; background: rgba(238,241,236,.92); backdrop-filter: saturate(1.4) blur(10px); -webkit-backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--line); padding-top: calc(env(safe-area-inset-top, 0px) + 10px); }
-.tab { flex: 1; padding: 9px 0; border: 0; background: transparent; border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--ink-2); }
+.tab { flex: 1; padding: 9px 0; border: 0; background: transparent; border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+@media (max-width: 400px) { .tab { font-size: 13px; } .tabs { gap: 2px; padding-left: 10px; padding-right: 10px; } }
+.v-textarea, .field select { padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; font-size: 15px; color: var(--ink); resize: vertical; }
+.v-search { width: 100%; margin: 12px 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 14.5px; }
+.v-group { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; }
+.v-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.v-date { font-size: 12.5px; color: var(--ink-2); font-weight: 600; }
+.v-opp { font-size: 15px; font-weight: 800; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v-link { border: 0; background: none; color: var(--grass); font-size: 12.5px; font-weight: 700; padding: 0; flex: none; }
+.v-free { font-size: 11.5px; font-weight: 700; color: var(--ink-3); background: var(--line-2); border-radius: 6px; padding: 2px 7px; flex: none; }
 .tab.on { background: var(--card); color: var(--ink); box-shadow: 0 1px 2px rgba(20,33,27,.08), 0 0 0 1px var(--line); }
 section { padding: 16px 16px 0; }
 
