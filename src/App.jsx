@@ -145,14 +145,28 @@ const ytEmbed = (url) => {
 // 여러 줄/공백으로 붙여 넣은 링크를 모두 뽑아냄
 const extractUrls = (text) => ((text || "").match(/https?:\/\/[^\s,]+/g) || []);
 // 새 영상 항목들 만들기: 여러 개면 이름 뒤에 번호, 이름이 없으면 '영상 N'
+// 이름 칸: 쉼표나 줄바꿈으로 나누면 링크 순서대로 하나씩 붙음 (예: "1쿼터, 2쿼터, 하이라이트")
+const splitNames = (label) => (label || "").replace(/https?:\/\/[^\s,]+/g, "").split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
 const makeVideos = (text, label, startIndex = 0) => {
-  const urls = extractUrls(text);
-  const base = (label || "").trim();
+  const urls = [...extractUrls(text), ...extractUrls(label)];   // 이름 칸에 링크를 넣은 경우도 링크로 처리
+  const names = splitNames(label);
   return urls.map((url, i) => ({
     id: "v" + Date.now().toString(36) + i,
     url,
-    label: base ? (urls.length > 1 ? `${base} ${i + 1}` : base) : `영상 ${startIndex + i + 1}`
+    label: names.length > 1
+      ? (names[i] || `영상 ${startIndex + i + 1}`)
+      : names.length === 1 ? (urls.length > 1 ? `${names[0]} ${i + 1}` : names[0]) : `영상 ${startIndex + i + 1}`
   }));
+};
+// 올리기 전에 '링크 → 이름' 짝을 미리 보여주기
+const NamePreview = ({ text, label }) => {
+  const items = makeVideos(text, label, 0);
+  if (items.length < 2) return null;
+  return (
+    <div className="name-preview">
+      {items.map((v, i) => <div key={i}><span className="np-i">{i + 1}</span><span className="np-l">{v.label}</span><span className="np-u">{v.url.replace(/^https?:\/\//, "").slice(0, 28)}…</span></div>)}
+    </div>
+  );
 };
 const isUrl = (v) => { try { const u = new URL(v.trim()); return u.protocol === "https:" || u.protocol === "http:"; } catch (e) { return false; } };
 
@@ -214,7 +228,8 @@ export default function App() {
   const [playing, setPlaying] = useState(null);     // 재생 중인 영상 id
   const [confirmVid, setConfirmVid] = useState(null);
   const [vForm, setVForm] = useState(null);          // 영상 탭 추가 폼 (null이면 닫힘)
-  const [vFilter, setVFilter] = useState("");        // 영상 탭 검색
+  const [vFilter, setVFilter] = useState("");
+  const [editVid, setEditVid] = useState(null);      // 영상 이름 수정 {id, label}        // 영상 탭 검색
   const [showInactive, setShowInactive] = useState(false);     // 순위표에 미활동 포함
   const [showInactiveInput, setShowInactiveInput] = useState(false); // 참석 선택에 미활동 포함
   const [query, setQuery] = useState("");
@@ -666,12 +681,33 @@ export default function App() {
     showToast(`영상 ${added}개를 올렸어요`);
   };
 
+  // 영상 이름 바꾸기 (경기에 붙은 영상 / 영상만 올린 것 모두)
+  const renameVideo = async (v, label) => {
+    const name = (label || "").trim();
+    if (!name) { setEditVid(null); return; }
+    const ok = await saveChange((d) => (v.matchId
+      ? { ...d, matches: d.matches.map((m) => (m.id === v.matchId ? { ...m, videos: (m.videos || []).map((x) => (x.id === v.id ? { ...x, label: name } : x)) } : m)) }
+      : { ...d, videoLog: (d.videoLog || []).map((x) => (x.id === v.id ? { ...x, label: name } : x)) }));
+    setEditVid(null);
+    if (ok) showToast("이름을 바꿨어요");
+  };
+
   const removeAnyVideo = async (v) => {
     if (v.matchId) return removeVideo(v.matchId, v.id);
     const ok = await saveChange((d) => ({ ...d, videoLog: (d.videoLog || []).filter((x) => x.id !== v.id) }));
     setConfirmVid(null);
     if (ok) showToast("영상을 삭제했어요");
   };
+
+  const vidLabel = (v, fallback, matchId) => (editVid && editVid.id === v.id ? (
+    <span className="v-edit">
+      <input autoFocus value={editVid.label} onChange={(e) => setEditVid({ ...editVid, label: e.target.value })}
+        onKeyDown={(e) => { if (e.key === "Enter") renameVideo({ ...v, matchId }, editVid.label); if (e.key === "Escape") setEditVid(null); }} />
+      <button className="solid-btn sm" disabled={busy} onClick={() => renameVideo({ ...v, matchId }, editVid.label)}>저장</button>
+    </span>
+  ) : (
+    <button className="v-label v-label-btn" title="이름 바꾸기" onClick={() => setEditVid({ id: v.id, label: v.label || "" })}>{v.label || fallback}<span className="pen">✎</span></button>
+  ));
 
   const renderSchedForm = () => (
                 <div className="sched-form">
@@ -1363,7 +1399,7 @@ export default function App() {
                                 <div className="player"><iframe src={emb + (emb.includes("?") ? "&" : "?") + "autoplay=1"} title={v.label || "경기 영상"} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen /></div>
                               ) : null}
                               <div className="video-row">
-                                <span className="v-label">{v.label || (emb ? "유튜브 영상" : "영상 링크")}</span>
+                                {vidLabel(v, emb ? "유튜브 영상" : "영상 링크", m.id)}
                                 {emb ? (
                                   <button className="solid-btn sm" onClick={() => setPlaying(playing === v.id ? null : v.id)}>{playing === v.id ? "닫기" : "▶ 재생"}</button>
                                 ) : (
@@ -1380,7 +1416,8 @@ export default function App() {
                         })}
                         <div className="vid-add">
                           <textarea rows={2} value={(vidInput[m.id] || {}).url || ""} placeholder={"영상 링크 (유튜브, 드라이브 등)\n여러 개면 줄을 바꿔 한꺼번에 붙여 넣기"} onChange={(e) => setVidInput({ ...vidInput, [m.id]: { ...(vidInput[m.id] || {}), url: e.target.value } })} />
-                          <input value={(vidInput[m.id] || {}).label || ""} placeholder="이름 (예: 1쿼터, 하이라이트) · 비우면 영상 1, 2…" onChange={(e) => setVidInput({ ...vidInput, [m.id]: { ...(vidInput[m.id] || {}), label: e.target.value } })} />
+                          <input value={(vidInput[m.id] || {}).label || ""} placeholder="이름 · 여러 개면 쉼표로 (예: 1쿼터, 2쿼터)" onChange={(e) => setVidInput({ ...vidInput, [m.id]: { ...(vidInput[m.id] || {}), label: e.target.value } })} />
+                          <NamePreview text={(vidInput[m.id] || {}).url} label={(vidInput[m.id] || {}).label} />
                           <button className="solid-btn" disabled={busy} onClick={() => addVideo(m.id)}>{extractUrls((vidInput[m.id] || {}).url).length > 1 ? `영상 ${extractUrls((vidInput[m.id] || {}).url).length}개 추가` : "영상 추가"}</button>
                         </div>
                       </div>
@@ -1459,7 +1496,8 @@ export default function App() {
                     <label className="field"><span>상대팀</span><input value={vForm.opponent} placeholder="모르면 비워 두기" list="opp-list" autoComplete="off" onChange={(e) => setVForm((f) => ({ ...f, opponent: e.target.value }))} /></label>
                   </div>
                 )}
-                <label className="field"><span>이름</span><input value={vForm.label} placeholder="예: 1쿼터, 하이라이트 · 비우면 영상 1, 2…" onChange={(e) => setVForm((f) => ({ ...f, label: e.target.value }))} /></label>
+                <label className="field"><span>이름</span><input value={vForm.label} placeholder="여러 개면 쉼표로 (예: 1-2쿼터, 3쿼터, 하이라이트)" onChange={(e) => setVForm((f) => ({ ...f, label: e.target.value }))} /></label>
+                <NamePreview text={vForm.url} label={vForm.label} />
                 <div className="sched-actions">
                   <button className="ghost-btn" onClick={() => setVForm(null)}>취소</button>
                   <button className="solid-btn" disabled={busy} onClick={addVideoFree}>{extractUrls(vForm.url).length > 1 ? `영상 ${extractUrls(vForm.url).length}개 올리기` : "영상 올리기"}</button>
@@ -1492,7 +1530,7 @@ export default function App() {
                         <div className="video" key={v.id}>
                           {emb && playing === v.id && <div className="player"><iframe src={emb + (emb.includes("?") ? "&" : "?") + "autoplay=1"} title={v.label || "경기 영상"} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen /></div>}
                           <div className="video-row">
-                            <span className="v-label">{v.label || (emb ? "유튜브 영상" : "영상 링크")}</span>
+                            {vidLabel(v, emb ? "유튜브 영상" : "영상 링크", v.matchId)}
                             {emb ? <button className="solid-btn sm" onClick={() => setPlaying(playing === v.id ? null : v.id)}>{playing === v.id ? "닫기" : "▶ 재생"}</button>
                                  : <a className="solid-btn sm" href={v.url} target="_blank" rel="noopener noreferrer">열기</a>}
                             {confirmVid === v.id
@@ -1721,6 +1759,15 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .tab { flex: 1; padding: 9px 0; border: 0; background: transparent; border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
 @media (max-width: 400px) { .tab { font-size: 13px; } .tabs { gap: 2px; padding-left: 10px; padding-right: 10px; } }
 .v-textarea, .field select { padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; font-size: 15px; color: var(--ink); resize: vertical; }
+.name-preview { background: var(--chalk); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.name-preview div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.np-i { width: 18px; height: 18px; border-radius: 50%; background: var(--pitch); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; flex: none; }
+.np-l { font-weight: 700; flex: none; }
+.np-u { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.v-label-btn { border: 0; background: none; padding: 0; text-align: left; color: inherit; font: inherit; font-weight: 600; cursor: pointer; }
+.v-label-btn .pen { font-size: 11px; color: var(--ink-3); margin-left: 6px; }
+.v-edit { flex: 1; display: flex; gap: 6px; min-width: 0; }
+.v-edit input { flex: 1; min-width: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; background: var(--card); }
 .v-search { width: 100%; margin: 12px 0 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font-size: 14.5px; }
 .v-group { background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; }
 .v-group-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
