@@ -76,6 +76,7 @@ const DB_ROW_ID = 1;
 const API_URL = `${SUPABASE_URL}/rest/v1/fc_records?id=eq.${DB_ROW_ID}`;
 
 const BASE_MATCHES = 18;
+const BASE_DATE = "2026-07-04";   // 이월 기록(BASE) 마지막 날짜
 const BASE_TEAM = { games: 80, w: 25, d: 20, l: 35, gf: 74, ga: 87 };
 const BASE = {
   "신재빈":{att:13,g:12,mom:1,a:6},"정수한":{att:15,g:9,mom:4,a:7},"윤지환":{att:14,g:7,mom:0,a:6},
@@ -413,11 +414,12 @@ export default function App() {
       return [...fromSheet, ...extra].filter((p) => !hidden.has(p.name));
     }
     // 2) 시트를 못 읽었을 때: 기존 방식 (기본 기록 + 앱 입력 매치)
-    const totalMatches = BASE_MATCHES + data.matches.length;
+    const afterBase = data.matches.filter((m) => m.date > BASE_DATE);
+    const totalMatches = BASE_MATCHES + afterBase.length;
     return data.players.filter((n) => !hidden.has(n)).map((name) => {
       const b = BASE[name] || zero();
       let att = b.att, g = b.g, a = b.a, mom = b.mom, cs = 0;
-      data.matches.forEach((m) => {
+      afterBase.forEach((m) => {
         if (m.attendees.includes(name)) {
           att++;
           cs += validGames(m).filter((x) => Number(x.opp) === 0).length;
@@ -448,10 +450,12 @@ export default function App() {
   const podium = useMemo(() => [...activeStats].sort((x, y) => (y.points - x.points) || (y.g - x.g) || (y.att - x.att)).slice(0, 3), [activeStats]);
 
   const teamRecord = useMemo(() => {
-    const t = { ...BASE_TEAM, matchDays: BASE_MATCHES };
+    // 시즌 전체 경기가 앱에 있으면(7/4 이전 경기 존재) 이월 기록 없이 경기 기록만으로 계산
+    const full = data && data.matches.some((m) => m.date <= BASE_DATE);
+    const t = full ? { games: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, matchDays: 0 } : { ...BASE_TEAM, matchDays: BASE_MATCHES };
     if (!data) return t;
     t.matchDays += data.matches.length;
-    data.matches.forEach((m) => {
+    data.matches.filter((m) => full || m.date > BASE_DATE).forEach((m) => {
       validGames(m).forEach((x) => {
         const o = Number(x.our), p = Number(x.opp);
         t.games++; t.gf += o; t.ga += p;
@@ -1153,6 +1157,43 @@ export default function App() {
                   {nm.gather && <span>{nm.gather} 집합</span>}
                   {uni && <span className="uni"><i style={{ background: uniformColor(uni) }} />유니폼 {uni}</span>}
                 </div>
+                {(() => {
+                  const v = findVenue(nm.place);
+                  const r = normTeam(nm.opponent) ? h2h(nm.opponent) : null;
+                  const t = normTeam(nm.opponent) ? teamSummary(nm.opponent) : null;
+                  const sizeShort = v && v.size ? (v.size >= SKKU_SIZE ? `성대보다 ${(v.size / SKKU_SIZE).toFixed(1)}배` : `성대의 ${Math.round((v.size / SKKU_SIZE) * 100)}%`) : "";
+                  return (
+                    <div className="h-info">
+                      {nm.place && (
+                        <div className="h-info-row">
+                          <span className="h-info-k">구장</span>
+                          <span className="h-info-v">{v && v.size ? <>{v.size.toLocaleString()}㎡ <small>({sizeShort})</small></> : <small>넓이 정보 없음</small>}</span>
+                        </div>
+                      )}
+                      {nm.place && (
+                        <div className="h-info-row">
+                          <span className="h-info-k">신발</span>
+                          <span className="h-info-v">{v && v.shoes ? <b>{v.shoes === "둘 다 가능" ? "축구화·풋살화 모두 OK" : `${v.shoes} 추천`}</b> : <small>추천 정보 없음 · 구장을 눌러 입력</small>}</span>
+                        </div>
+                      )}
+                      {normTeam(nm.opponent) && (
+                        <div className="h-info-row">
+                          <span className="h-info-k">전적</span>
+                          <span className="h-info-v">
+                            {r ? <><b className="w">{r.mw}승</b> <b className="d">{r.md}무</b> <b className="l">{r.ml}패</b> <small>· 게임 {r.w}승 {r.d}무 {r.l}패 · 최근 {Number(r.last.date.slice(5, 7))}/{Number(r.last.date.slice(8))}</small></>
+                               : t ? <small>앱 기록 없음 · 이전에 {t.n}번 붙음</small> : <small>처음 만나는 팀</small>}
+                          </span>
+                        </div>
+                      )}
+                      {t && (
+                        <div className="h-info-row">
+                          <span className="h-info-k">실력</span>
+                          <span className="h-info-v"><b>{t.level || "-"}</b>{t.levelAvg && t.levelAvg !== t.level ? <small> (평균 {t.levelAvg})</small> : null}<small> · 평가 {t.n}개</small></span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </button>
             ) : (
               <button className="h-next empty" onClick={() => { setTab("log"); setMatchSeg("upcoming"); setSchedForm(emptySched()); }}>잡힌 경기가 없어요 · 일정 추가</button>
@@ -1169,7 +1210,7 @@ export default function App() {
                       <span className={`r5 ${r}`}>{r === "W" ? "승" : r === "D" ? "무" : "패"}</span>
                       <div className="h-last-main">
                         <div className="h-last-opp">{last.opponent ? `vs ${last.opponent}` : "상대 기록 없음"}</div>
-                        <div className="h-last-date">{fmtDate(last.date)} · {matchSummary(last)} · {last.attendees.length}명</div>
+                        <div className="h-last-date">{fmtDate(last.date)} · {matchSummary(last)}{last.attendees.length ? ` · ${last.attendees.length}명` : ""}</div>
                       </div>
                     </div>
                     <div className="games-line">{validGames(last).map(gameBadge)}</div>
@@ -1547,10 +1588,12 @@ export default function App() {
           )}
 
           {matchSeg === "past" && (<>
-          <div className="base-card">
-            <div className="log-date">~ 2026-07-04</div>
-            <div className="log-score"><span className="base-tag">이월</span><span className="opp">18매치 · 80게임 · 25승 20무 35패 · 득실 74:87</span></div>
-          </div>
+          {!data.matches.some((m) => m.date <= BASE_DATE) && (
+            <div className="base-card">
+              <div className="log-date">~ 2026-07-04</div>
+              <div className="log-score"><span className="base-tag">이월</span><span className="opp">18매치 · 80게임 · 25승 20무 35패 · 득실 74:87</span></div>
+            </div>
+          )}
           {data.matches.length === 0 && (
             <div className="empty">아직 앱에서 입력한 매치가 없어요. 매치 입력 탭에서 첫 경기를 기록해 보세요.</div>
           )}
@@ -1565,7 +1608,7 @@ export default function App() {
                       <span className="games-line">{validGames(m).map(gameBadge)}</span>
                       {m.opponent && <span className="opp">vs {m.opponent}</span>}
                     </div>
-                    <div className="log-meta">{matchSummary(m)} · {m.attendees.length}명{(m.videos || []).length > 0 && <span className="vid-badge">▶ 영상 {m.videos.length}</span>}</div>
+                    <div className="log-meta">{matchSummary(m)}{m.attendees.length ? ` · ${m.attendees.length}명` : ""}{(m.videos || []).length > 0 && <span className="vid-badge">▶ 영상 {m.videos.length}</span>}</div>
                   </button>
                   {expanded === m.id && (
                     <div className="log-body">
@@ -1576,7 +1619,7 @@ export default function App() {
                         <p><b>도움</b> {Object.entries(m.assists).map(([n, c]) => (c > 1 ? `${n}(${c})` : n)).join(", ")}</p>
                       )}
                       {m.mom && <p><b>MOM</b> ★ {m.mom}</p>}
-                      <p><b>출석</b> {m.attendees.join(", ")}</p>
+                      <p><b>출석</b> {m.attendees.length ? m.attendees.join(", ") : "기록 없음 (시트에서 옮긴 경기)"}</p>
                       {m.opponent && <H2H opp={m.opponent} />}
 
                       {/* 경기 영상 */}
@@ -2110,6 +2153,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .h-last .games-line { margin-top: 10px; }
 .h-last-stats { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-2); font-size: 13px; }
 .h-last-stats b { display: inline-block; width: 38px; color: var(--ink-3); font-weight: 600; font-size: 12px; }
+.h-info { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-2); display: flex; flex-direction: column; gap: 5px; }
+.h-info-row { display: flex; align-items: baseline; gap: 10px; font-size: 13.5px; }
+.h-info-k { width: 30px; flex: none; font-size: 12px; font-weight: 700; color: var(--ink-3); }
+.h-info-v { min-width: 0; color: var(--ink); }
+.h-info-v small { font-size: 12.5px; color: var(--ink-2); font-weight: 400; }
+.h-info-v b { font-weight: 800; }
+.h-info-v b.w { color: var(--win); } .h-info-v b.d { color: var(--draw); } .h-info-v b.l { color: var(--loss); }
 .h-form { display: flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; }
 .r5 { width: 30px; height: 30px; border-radius: 8px; display: inline-grid; place-items: center; font-size: 12.5px; font-weight: 800; }
 .r5.W { background: var(--win-soft); color: var(--win); }
