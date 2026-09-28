@@ -1146,7 +1146,7 @@ export default function App() {
           <section className="home">
             <div className="h-title">다음 경기</div>
             {nm ? (
-              <button className="h-next" onClick={() => { setTab("log"); setMatchSeg("upcoming"); }}>
+              <div className="h-next" role="button" tabIndex={0} onClick={() => { setTab("log"); setMatchSeg("upcoming"); }}>
                 <div className="h-next-top">
                   <span className={`dd ${dday(nm.date) === 0 ? "today" : ""}`}>{ddayLabel(dday(nm.date))}</span>
                   <span className="h-date">{fmtDate(nm.date)}{timeRange(nm) ? ` · ${timeRange(nm).replace("~", "–")}` : ""}</span>
@@ -1194,44 +1194,40 @@ export default function App() {
                     </div>
                   );
                 })()}
-              </button>
-            ) : (
-              <button className="h-next empty" onClick={() => { setTab("log"); setMatchSeg("upcoming"); setSchedForm(emptySched()); }}>잡힌 경기가 없어요 · 일정 추가</button>
-            )}
-
-            {nm && (() => {
-              // 이번 경기에 올린 상대 분석 영상 + 같은 팀과의 지난 경기 때 올렸던 분석 영상
-              const cur = (nm.scout || []).map((v) => ({ ...v, kind: "scout-s", schedId: nm.id, matchId: null, when: "이번 경기" }));
-              const past = normTeam(nm.opponent) ? data.matches.filter((m) => normTeam(m.opponent) === normTeam(nm.opponent) && (m.scout || []).length)
-                .flatMap((m) => m.scout.map((v) => ({ ...v, kind: "scout-m", matchId: m.id, when: `${Number(m.date.slice(5, 7))}/${Number(m.date.slice(8))} 경기 때` }))) : [];
-              const list = [...cur, ...past];
-              return (
-                <>
-                  <div className="h-title">상대 분석 영상{list.length ? ` ${list.length}` : ""}</div>
-                  {list.length ? (
-                    <div className="h-scout">
-                      {list.map((v) => {
+                {(() => {
+                  // 이번 경기 상대 분석 영상 + 같은 팀과의 지난 경기 때 올렸던 분석 영상
+                  const cur = (nm.scout || []).map((v) => ({ ...v, when: "" }));
+                  const past = normTeam(nm.opponent) ? data.matches.filter((m) => normTeam(m.opponent) === normTeam(nm.opponent) && (m.scout || []).length)
+                    .flatMap((m) => m.scout.map((v) => ({ ...v, when: `${Number(m.date.slice(5, 7))}/${Number(m.date.slice(8))} 경기 때` }))) : [];
+                  const list = [...cur, ...past];
+                  const stop = (e) => e.stopPropagation();
+                  return (
+                    <div className="h-scout" onClick={stop}>
+                      <div className="h-scout-k">상대 분석 영상{list.length ? ` ${list.length}` : ""}</div>
+                      {list.length ? list.map((v) => {
                         const emb = ytEmbed(v.url);
                         return (
                           <div className="video" key={v.id}>
                             {emb && playing === v.id && <div className="player"><iframe src={emb + (emb.includes("?") ? "&" : "?") + "autoplay=1"} title={v.label || "상대 분석 영상"} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen /></div>}
                             <div className="video-row">
-                              <span className="v-label">{v.label || "상대 영상"}{v.when !== "이번 경기" && <small className="h-scout-when"> · {v.when}</small>}</span>
+                              <span className="v-label">{v.label || "상대 영상"}{v.when && <small className="h-scout-when"> · {v.when}</small>}</span>
                               {emb ? <button className="solid-btn sm" onClick={() => setPlaying(playing === v.id ? null : v.id)}>{playing === v.id ? "닫기" : "▶ 재생"}</button>
                                    : <a className="solid-btn sm" href={v.url} target="_blank" rel="noopener noreferrer">열기</a>}
                             </div>
                           </div>
                         );
-                      })}
+                      }) : (
+                        <button className="h-scout-empty" onClick={() => { setTab("log"); setMatchSeg("upcoming"); setScoutOpen(nm.id); window.scrollTo(0, 0); }}>
+                          {normTeam(nm.opponent) ? `${nm.opponent} 경기 영상 올리기` : "상대가 정해지면 분석 영상을 올려 보세요"} ›
+                        </button>
+                      )}
                     </div>
-                  ) : (
-                    <button className="h-scout-empty" onClick={() => { setTab("log"); setMatchSeg("upcoming"); setScoutOpen(nm.id); window.scrollTo(0, 0); }}>
-                      {normTeam(nm.opponent) ? `${nm.opponent} 경기 영상을 올려 두면 여기서 바로 볼 수 있어요` : "상대가 정해지면 분석 영상을 올려 보세요"} ›
-                    </button>
-                  )}
-                </>
-              );
-            })()}
+                  );
+                })()}
+              </div>
+            ) : (
+              <button className="h-next empty" onClick={() => { setTab("log"); setMatchSeg("upcoming"); setSchedForm(emptySched()); }}>잡힌 경기가 없어요 · 일정 추가</button>
+            )}
 
             {last && (() => {
               const r = matchResult(last);
@@ -2187,9 +2183,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .h-last .games-line { margin-top: 10px; }
 .h-last-stats { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-2); font-size: 13px; }
 .h-last-stats b { display: inline-block; width: 38px; color: var(--ink-3); font-weight: 600; font-size: 12px; }
-.h-scout { display: flex; flex-direction: column; gap: 6px; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); padding: 10px; }
+.h-next[role="button"] { cursor: pointer; }
+.h-scout { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-2); cursor: default; }
+.h-scout-k { font-size: 12px; font-weight: 700; color: var(--ink-3); }
 .h-scout-when { font-weight: 500; color: var(--ink-3); font-size: 12px; }
-.h-scout-empty { width: 100%; text-align: left; border: 1px dashed var(--line); background: var(--card); border-radius: var(--r); padding: 12px 14px; font-size: 13px; color: var(--ink-2); }
+.h-scout-empty { width: 100%; text-align: left; border: 1px dashed var(--line); background: var(--chalk); border-radius: 10px; padding: 9px 12px; font-size: 13px; color: var(--ink-2); }
 .h-info { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line-2); display: flex; flex-direction: column; gap: 5px; }
 .h-info-row { display: flex; align-items: baseline; gap: 10px; font-size: 13.5px; }
 .h-info-k { width: 30px; flex: none; font-size: 12px; font-weight: 700; color: var(--ink-3); }
