@@ -229,7 +229,9 @@ export default function App() {
   const [confirmVid, setConfirmVid] = useState(null);
   const [vForm, setVForm] = useState(null);          // 영상 탭 추가 폼 (null이면 닫힘)
   const [vFilter, setVFilter] = useState("");
-  const [editVid, setEditVid] = useState(null);      // 영상 이름 수정 {id, label}        // 영상 탭 검색
+  const [editVid, setEditVid] = useState(null);
+  const [scoutOpen, setScoutOpen] = useState(null);   // 상대 분석 영상 펼친 예정 경기 id
+  const [scoutInput, setScoutInput] = useState({});   // { [schedId]: {url, label} }      // 영상 이름 수정 {id, label}        // 영상 탭 검색
   const [showInactive, setShowInactive] = useState(false);     // 순위표에 미활동 포함
   const [showInactiveInput, setShowInactiveInput] = useState(false); // 참석 선택에 미활동 포함
   const [query, setQuery] = useState("");
@@ -527,8 +529,8 @@ export default function App() {
       ...d,
       matches: (editId
         ? d.matches.map((m) => (m.id === editId ? { ...m, ...match, videos: [...(m.videos || []), ...makeVideos(newVideoText, "", (m.videos || []).length)] } : m))   // 수정: 기존 영상 유지 + 새 영상 추가
-        : [...d.matches, { ...match, videos: makeVideos(newVideoText, "", 0) }]).sort((a, b) => a.date.localeCompare(b.date)),
-      schedule: (d.schedule || []).filter((x) => x.id !== sid)
+        : [...d.matches, { ...match, videos: makeVideos(newVideoText, "", 0), scout: ((d.schedule || []).find((x) => x.id === sid) || {}).scout || [] }]).sort((a, b) => a.date.localeCompare(b.date)),
+      schedule: (d.schedule || []).filter((x) => x.id !== sid)   // 예정 경기의 상대 분석 영상은 매치로 옮겨짐
     }));
     if (!ok) return;
     setForm(emptyForm());
@@ -656,7 +658,9 @@ export default function App() {
     if (!data) return [];
     const fromMatches = data.matches.flatMap((m) => (m.videos || []).map((v) => ({ ...v, date: m.date, opponent: m.opponent || "", matchId: m.id })));
     const free = (data.videoLog || []).map((v) => ({ ...v, matchId: null }));
-    return [...fromMatches, ...free].sort((a, b) => (b.date || "").localeCompare(a.date || "") || (a.id < b.id ? -1 : 1));
+    const scoutM = data.matches.flatMap((m) => (m.scout || []).map((v) => ({ ...v, date: m.date, opponent: m.opponent || "", matchId: m.id, kind: "scout-m", scout: true })));
+    const scoutS = (data.schedule || []).flatMap((x) => (x.scout || []).map((v) => ({ ...v, date: x.date, opponent: x.opponent || "", matchId: null, schedId: x.id, kind: "scout-s", scout: true })));
+    return [...fromMatches, ...free, ...scoutM, ...scoutS].sort((a, b) => (b.date || "").localeCompare(a.date || "") || (a.id < b.id ? -1 : 1));
   }, [data]);
 
   const addVideoFree = async () => {
@@ -685,16 +689,43 @@ export default function App() {
   const renameVideo = async (v, label) => {
     const name = (label || "").trim();
     if (!name) { setEditVid(null); return; }
-    const ok = await saveChange((d) => (v.matchId
-      ? { ...d, matches: d.matches.map((m) => (m.id === v.matchId ? { ...m, videos: (m.videos || []).map((x) => (x.id === v.id ? { ...x, label: name } : x)) } : m)) }
-      : { ...d, videoLog: (d.videoLog || []).map((x) => (x.id === v.id ? { ...x, label: name } : x)) }));
+    const ren = (arr) => (arr || []).map((x) => (x.id === v.id ? { ...x, label: name } : x));
+    const ok = await saveChange((d) => (
+      v.kind === "scout-s" ? { ...d, schedule: (d.schedule || []).map((x) => (x.id === v.schedId ? { ...x, scout: ren(x.scout) } : x)) }
+      : v.kind === "scout-m" ? { ...d, matches: d.matches.map((m) => (m.id === v.matchId ? { ...m, scout: ren(m.scout) } : m)) }
+      : v.matchId ? { ...d, matches: d.matches.map((m) => (m.id === v.matchId ? { ...m, videos: ren(m.videos) } : m)) }
+      : { ...d, videoLog: ren(d.videoLog) }));
     setEditVid(null);
     if (ok) showToast("이름을 바꿨어요");
   };
 
+  // 예정 경기에 상대팀 분석 영상 올리기
+  const addScout = async (sid) => {
+    const v = scoutInput[sid] || {};
+    if (!extractUrls(v.url).length && !extractUrls(v.label).length) { showToast("영상 주소를 확인해 주세요 (https://로 시작)"); return; }
+    let added = 0;
+    const ok = await saveChange((d) => ({ ...d, schedule: (d.schedule || []).map((x) => {
+      if (x.id !== sid) return x;
+      const items = makeVideos(v.url, v.label, (x.scout || []).length); added = items.length;
+      return { ...x, scout: [...(x.scout || []), ...items] };
+    }) }));
+    if (!ok) return;
+    setScoutInput({ ...scoutInput, [sid]: { url: "", label: "" } });
+    showToast(`상대 영상 ${added}개를 올렸어요`);
+  };
+
   const removeAnyVideo = async (v) => {
+    const del = (arr) => (arr || []).filter((x) => x.id !== v.id);
+    if (v.kind === "scout-s" || v.kind === "scout-m") {
+      const ok = await saveChange((d) => (v.kind === "scout-s"
+        ? { ...d, schedule: (d.schedule || []).map((x) => (x.id === v.schedId ? { ...x, scout: del(x.scout) } : x)) }
+        : { ...d, matches: d.matches.map((m) => (m.id === v.matchId ? { ...m, scout: del(m.scout) } : m)) }));
+      setConfirmVid(null);
+      if (ok) showToast("영상을 삭제했어요");
+      return;
+    }
     if (v.matchId) return removeVideo(v.matchId, v.id);
-    const ok = await saveChange((d) => ({ ...d, videoLog: (d.videoLog || []).filter((x) => x.id !== v.id) }));
+    const ok = await saveChange((d) => ({ ...d, videoLog: del(d.videoLog) }));
     setConfirmVid(null);
     if (ok) showToast("영상을 삭제했어요");
   };
@@ -1339,8 +1370,49 @@ export default function App() {
                       )}
                       {x.memo && <div className="sc-meta">{x.memo}</div>}
                       {x.opponent && <H2H opp={x.opponent} compact />}
+                      <div className="scout">
+                        <button className="scout-toggle" onClick={() => setScoutOpen(scoutOpen === x.id ? null : x.id)}>
+                          <span>상대 분석 영상{(x.scout || []).length ? ` ${x.scout.length}개` : ""}</span><span>{scoutOpen === x.id ? "▴" : "▾"}</span>
+                        </button>
+                        {scoutOpen === x.id && (
+                          <div className="scout-body">
+                            <div className="videos">
+                              {(x.scout || []).map((v0) => {
+                                const v = { ...v0, kind: "scout-s", schedId: x.id, matchId: null };
+                                const emb = ytEmbed(v.url);
+                                return (
+                                  <div className="video" key={v.id}>
+                                    {emb && playing === v.id && <div className="player"><iframe src={emb + (emb.includes("?") ? "&" : "?") + "autoplay=1"} title={v.label || "상대 영상"} allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowFullScreen /></div>}
+                                    <div className="video-row">
+                                      {editVid && editVid.id === v.id ? (
+                                        <span className="v-edit">
+                                          <input autoFocus value={editVid.label} onChange={(e) => setEditVid({ ...editVid, label: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") renameVideo(v, editVid.label); if (e.key === "Escape") setEditVid(null); }} />
+                                          <button className="solid-btn sm" disabled={busy} onClick={() => renameVideo(v, editVid.label)}>저장</button>
+                                        </span>
+                                      ) : (
+                                        <button className="v-label v-label-btn" onClick={() => setEditVid({ id: v.id, label: v.label || "" })}>{v.label || "상대 영상"}<span className="pen">✎</span></button>
+                                      )}
+                                      {emb ? <button className="solid-btn sm" onClick={() => setPlaying(playing === v.id ? null : v.id)}>{playing === v.id ? "닫기" : "▶ 재생"}</button>
+                                           : <a className="solid-btn sm" href={v.url} target="_blank" rel="noopener noreferrer">열기</a>}
+                                      {confirmVid === v.id
+                                        ? <><button className="ghost-btn sm danger-t" onClick={() => removeAnyVideo(v)}>삭제</button><button className="ghost-btn sm" onClick={() => setConfirmVid(null)}>취소</button></>
+                                        : <button className="ghost-btn sm" aria-label="영상 삭제" onClick={() => setConfirmVid(v.id)}>×</button>}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            <div className="vid-add">
+                              <textarea rows={2} value={(scoutInput[x.id] || {}).url || ""} placeholder={"상대팀 경기 영상 링크\n여러 개면 줄바꿈"} onChange={(e) => setScoutInput({ ...scoutInput, [x.id]: { ...(scoutInput[x.id] || {}), url: e.target.value } })} />
+                              <input value={(scoutInput[x.id] || {}).label || ""} placeholder="이름 · 여러 개면 쉼표로 (예: vs OO 전반, 후반)" onChange={(e) => setScoutInput({ ...scoutInput, [x.id]: { ...(scoutInput[x.id] || {}), label: e.target.value } })} />
+                              <NamePreview text={(scoutInput[x.id] || {}).url} label={(scoutInput[x.id] || {}).label} />
+                              <button className="solid-btn" disabled={busy} onClick={() => addScout(x.id)}>상대 영상 올리기</button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                       {confirmSched === x.id ? (
-                        <div className="del-confirm"><span>이 일정을 삭제할까요?</span><span><button onClick={() => setConfirmSched(null)}>취소</button><button className="danger" onClick={() => deleteSchedule(x.id)}>삭제</button></span></div>
+                        <div className="del-confirm"><span>이 일정을 삭제할까요?{(x.scout || []).length ? " 상대 영상도 함께 지워져요." : ""}</span><span><button onClick={() => setConfirmSched(null)}>취소</button><button className="danger" onClick={() => deleteSchedule(x.id)}>삭제</button></span></div>
                       ) : (
                         <div className="sc-actions">
                           <button className="ghost-btn" onClick={() => setConfirmSched(x.id)}>삭제</button>
@@ -1472,9 +1544,9 @@ export default function App() {
         const list = allVideos.filter((v) => !q || `${v.opponent} ${v.label} ${v.date}`.toLowerCase().includes(q));
         const groups = [];
         list.forEach((v) => {
-          const key = `${v.date}|${v.opponent}|${v.matchId || "free"}`;
+          const key = `${v.date}|${v.opponent}|${v.matchId || v.schedId || "free"}|${v.scout ? "scout" : "our"}`;
           const g = groups.find((x) => x.key === key);
-          if (g) g.items.push(v); else groups.push({ key, date: v.date, opponent: v.opponent, matchId: v.matchId, items: [v] });
+          if (g) g.items.push(v); else groups.push({ key, date: v.date, opponent: v.opponent, matchId: v.matchId, scout: !!v.scout, items: [v] });
         });
         const pastMatches = [...data.matches].sort((a, b) => b.date.localeCompare(a.date));
         return (
@@ -1519,9 +1591,11 @@ export default function App() {
                   <div className="v-group-head">
                     <span className="v-date">{g.date ? fmtDate(g.date) : "날짜 없음"}</span>
                     <span className="v-opp">{normTeam(g.opponent) ? `vs ${g.opponent}` : "상대 기록 없음"}</span>
-                    {g.matchId
-                      ? <button className="v-link" onClick={() => { setTab("log"); setMatchSeg("past"); setExpanded(g.matchId); window.scrollTo(0, 0); }}>경기 기록 ›</button>
-                      : <span className="v-free">영상만</span>}
+                    {g.scout
+                      ? <span className="v-free scout-tag">상대 분석</span>
+                      : g.matchId
+                        ? <button className="v-link" onClick={() => { setTab("log"); setMatchSeg("past"); setExpanded(g.matchId); window.scrollTo(0, 0); }}>경기 기록 ›</button>
+                        : <span className="v-free">영상만</span>}
                   </div>
                   <div className="videos">
                     {g.items.map((v) => {
@@ -1759,6 +1833,10 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .tab { flex: 1; padding: 9px 0; border: 0; background: transparent; border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
 @media (max-width: 400px) { .tab { font-size: 13px; } .tabs { gap: 2px; padding-left: 10px; padding-right: 10px; } }
 .v-textarea, .field select { padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; font-size: 15px; color: var(--ink); resize: vertical; }
+.scout { margin-top: 10px; border-top: 1px solid var(--line-2); padding-top: 8px; }
+.scout-toggle { width: 100%; display: flex; justify-content: space-between; border: 0; background: none; padding: 4px 0; font-size: 13.5px; font-weight: 700; color: var(--ink-2); }
+.scout-body { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.scout-tag { background: var(--gold-soft) !important; color: #8A6A10 !important; }
 .name-preview { background: var(--chalk); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .name-preview div { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .np-i { width: 18px; height: 18px; border-radius: 50%; background: var(--pitch); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; flex: none; }
