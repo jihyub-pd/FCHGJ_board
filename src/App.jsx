@@ -172,6 +172,29 @@ const isUrl = (v) => { try { const u = new URL(v.trim()); return u.protocol === 
 
 const emptySched = () => ({ date: todayStr(), time: "", endTime: "", gather: "", uniform: "", opponent: "", place: "", memo: "" });
 
+// ===== 구장 목록 (넓이 ㎡). 앱에서 수정하면 서버의 venues 목록이 우선 =====
+const DEFAULT_VENUES = [
+  ["세곡체육공원 축구장", 8970], ["용마폭포공원 축구장", 7250, ["용마폭포공원축구장"]], ["다락원 체육공원", 7168], ["성내 유수지 축구장", 7089],
+  ["난지천 축구장", 6850], ["우장산 축구장", 6492], ["대치 유수지 축구장", 6358, ["대치유수지 축구장"]], ["양천해누리구장", 6344],
+  ["오산고등학교 축구장", 6317], ["서울공업고등학교", 6200], ["잠실유수지", 6033], ["살곶이 축구장 1,2구장", 5812, ["살곶이 체육공원 축구장", "살곶이체육공원축구장", "살곶이 축구장"]],
+  ["초안산 축구장", 5615], ["아차산 배수지 축구장", 5584, ["아차산 배수지"]], ["서대문체육회관", 5563], ["동원중학교", 4872],
+  ["성균관대학교 운동장", 4593, ["성균관대 대운동장", "성균관대학교운동장", "성균관대 운동장", "성대 대운동장"]], ["중경고등학교", 4396],
+  ["방배 배수지 체육공원 축구장", 4393], ["인덕대학교", 3941], ["압구정 현대고", 3744, ["압구정 현대고등학교"]],
+  ["어린이대공원 운동장", null, ["어린이대공원운동장", "어린이대공원", "어린이대공원 축구장"]], ["서강대학교 축구장", null], ["송파 천마축구장", null],
+  ["중랑물재생센터", null], ["노량진 축구장", null], ["영등포 SKY 풋살파크", null, [], "풋살화"], ["응봉체육공원 축구장", null]
+].map(([name, size, aliases = [], shoes = ""]) => ({ id: "vn_" + name.replace(/\s+/g, ""), name, size, aliases, shoes }));
+const SKKU_SIZE = 4593;   // 비교 기준: 성균관대학교 운동장
+const vKey = (n) => (n || "").replace(/\s+/g, "").toLowerCase();
+const sizeCompare = (size) => {
+  if (!size) return "";
+  const diff = size - SKKU_SIZE;
+  if (Math.abs(diff) < 50) return "성균관대 운동장과 비슷해요";
+  const r = size / SKKU_SIZE;
+  return diff > 0 ? `성균관대 운동장보다 ${r.toFixed(1)}배 넓어요 (+${diff.toLocaleString()}㎡)` : `성균관대 운동장보다 좁아요 (${Math.round(r * 100)}% · ${Math.abs(diff).toLocaleString()}㎡ 작음)`;
+};
+// 상대팀 실력 등급: 상 > 중 > 하 > 하하 > 하하하 > 하하하하 (오른쪽일수록 약한 팀)
+const LEVELS = ["상", "중", "하", "하하", "하하하", "하하하하"];
+
 // 유니폼 색 (빨강·검정·파랑)
 const UNIFORMS = [["빨강", "#C0392B"], ["검정", "#1A1A1A"], ["파랑", "#2F5FA8"]];
 const uniformColor = (u) => { const f = UNIFORMS.find(([n]) => (u || "").includes(n)); return f ? f[1] : "#C9D2CB"; };
@@ -230,7 +253,13 @@ export default function App() {
   const [vForm, setVForm] = useState(null);          // 영상 탭 추가 폼 (null이면 닫힘)
   const [vFilter, setVFilter] = useState("");
   const [editVid, setEditVid] = useState(null);
-  const [scoutOpen, setScoutOpen] = useState(null);   // 상대 분석 영상 펼친 예정 경기 id
+  const [scoutOpen, setScoutOpen] = useState(null);
+  const [rvSeg, setRvSeg] = useState("team");
+  const [venueView, setVenueView] = useState(null);   // 구장 정보 창 (구장 이름)
+  const [placeCustom, setPlaceCustom] = useState(false); // 일정 폼: 목록에 없는 구장 직접 입력       // 평가 탭: team | venue
+  const [rvForm, setRvForm] = useState(null);       // 평가 작성 폼
+  const [rvOpen, setRvOpen] = useState(null);       // 펼친 팀/구장
+  const [confirmRv, setConfirmRv] = useState(null);   // 상대 분석 영상 펼친 예정 경기 id
   const [scoutInput, setScoutInput] = useState({});   // { [schedId]: {url, label} }      // 영상 이름 수정 {id, label}        // 영상 탭 검색
   const [showInactive, setShowInactive] = useState(false);     // 순위표에 미활동 포함
   const [showInactiveInput, setShowInactiveInput] = useState(false); // 참석 선택에 미활동 포함
@@ -516,6 +545,7 @@ export default function App() {
       id: editId || Date.now().toString(36),
       date: form.date,
       opponent: form.opponent.trim(),
+      ...(form.place ? { place: form.place } : {}),
       games: formGames.map((x) => ({ our: Number(x.our), opp: Number(x.opp) })),
       attendees: [...form.attendees],
       goals: { ...form.goals },
@@ -569,10 +599,17 @@ export default function App() {
     const editing = !!f.id;
     const ok = await saveChange((d) => {
       const list = d.schedule || [];
-      return { ...d, schedule: editing ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item] };
+      const out = { ...d, schedule: editing ? list.map((x) => (x.id === item.id ? item : x)) : [...list, item] };
+      // 목록에 없는 구장이면 구장 목록에 추가
+      if (item.place && !findVenue(item.place)) {
+        const vl = d.venues && d.venues.length ? d.venues : DEFAULT_VENUES;
+        out.venues = [...vl, { id: "vn_" + Date.now().toString(36), name: item.place, size: null, aliases: [], shoes: "" }];
+      }
+      return out;
     });
     if (!ok) return;
     setSchedForm(null);
+    setPlaceCustom(false);
     showToast(editing ? "일정을 수정했어요" : `${fmtDate(item.date)} 경기 일정을 추가했어요`);
   };
 
@@ -584,7 +621,7 @@ export default function App() {
   };
 
   const startResult = (x) => {
-    setForm({ ...emptyForm(), date: x.date, opponent: normTeam(x.opponent) ? x.opponent : "", scheduleId: x.id });
+    setForm({ ...emptyForm(), date: x.date, opponent: normTeam(x.opponent) ? x.opponent : "", place: x.place || "", scheduleId: x.id });
     setTab("input");
     window.scrollTo(0, 0);
     showToast("일정 정보를 불러왔어요. 스코어와 참석 선수를 입력해 주세요.");
@@ -699,6 +736,64 @@ export default function App() {
     if (ok) showToast("이름을 바꿨어요");
   };
 
+  // ---------- 팀·구장 평가 ----------
+  const avg = (arr) => (arr.length ? Math.round((arr.reduce((a, b) => a + b, 0) / arr.length) * 10) / 10 : 0);
+  const teamSummary = (name) => {
+    const k = normTeam(name); if (!k || !data) return null;
+    const rs = (data.teamReviews || []).filter((r) => normTeam(r.team) === k);
+    if (!rs.length) return null;
+    const sorted = [...rs].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    const lv = sorted.find((r) => r.level);
+    const idx = rs.map((r) => LEVELS.indexOf(r.level)).filter((i) => i >= 0);
+    return { n: rs.length, level: lv ? lv.level : "", levelAvg: idx.length ? LEVELS[Math.round(idx.reduce((a, b) => a + b, 0) / idx.length)] : "", skill: avg(rs.map((r) => r.skill).filter(Boolean)), manner: avg(rs.map((r) => r.manner).filter(Boolean)), again: rs.filter((r) => r.again === "yes").length };
+  };
+  const venueKey = vKey;
+  const venues = useMemo(() => (data && data.venues && data.venues.length ? data.venues : DEFAULT_VENUES), [data]);
+  const findVenue = (name) => {
+    const k = vKey(name); if (!k) return null;
+    return venues.find((v) => vKey(v.name) === k || (v.aliases || []).some((a) => vKey(a) === k)) || null;
+  };
+  const venueSummary = (name) => {
+    const v = findVenue(name); const keys = new Set([vKey(name), ...(v ? [v.name, ...(v.aliases || [])].map(vKey) : [])]);
+    if (!data) return null;
+    const rs = (data.venueReviews || []).filter((r) => keys.has(vKey(r.venue)));
+    if (!rs.length) return null;
+    return { n: rs.length, overall: avg(rs.map((r) => avg([r.turf, r.facility, r.access].filter(Boolean)))), items: rs };
+  };
+  // 구장 정보 수정 (넓이·추천 신발). 처음 수정할 때 기본 목록을 서버에 저장
+  const updateVenue = async (name, patch) => {
+    const ok = await saveChange((d) => {
+      const list = d.venues && d.venues.length ? d.venues : DEFAULT_VENUES;
+      const k = vKey(name);
+      const exists = list.some((v) => vKey(v.name) === k || (v.aliases || []).some((a) => vKey(a) === k));
+      return { ...d, venues: exists
+        ? list.map((v) => (vKey(v.name) === k || (v.aliases || []).some((a) => vKey(a) === k) ? { ...v, ...patch } : v))
+        : [...list, { id: "vn_" + Date.now().toString(36), name: name.trim(), size: null, aliases: [], shoes: "", ...patch }] };
+    });
+    if (ok) showToast("구장 정보를 저장했어요");
+  };
+  const levelOf = (r) => (r.level ? r.level : "");
+  const saveReview = async () => {
+    const f = rvForm;
+    const name = (f.kind === "team" ? f.team : f.venue || "").trim();
+    if (!name) { showToast(f.kind === "team" ? "팀 이름을 적어 주세요" : "구장 이름을 적어 주세요"); return; }
+    const item = f.kind === "team"
+      ? { id: "r" + Date.now().toString(36), team: name, date: f.date, level: f.level, manner: f.manner, again: f.again, memo: f.memo.trim() }
+      : { id: "r" + Date.now().toString(36), venue: name, date: f.date, turf: f.turf, facility: f.facility, access: f.access, tags: f.tags, memo: f.memo.trim() };
+    const key = f.kind === "team" ? "teamReviews" : "venueReviews";
+    const ok = await saveChange((d) => ({ ...d, [key]: [...(d[key] || []), item] }));
+    if (!ok) return;
+    setRvForm(null);
+    if (f.kind === "team") setRvOpen(normTeam(name)); else setVenueView(name);
+    showToast("평가를 올렸어요");
+  };
+  const deleteReview = async (kind, id) => {
+    const key = kind === "team" ? "teamReviews" : "venueReviews";
+    const ok = await saveChange((d) => ({ ...d, [key]: (d[key] || []).filter((r) => r.id !== id) }));
+    setConfirmRv(null);
+    if (ok) showToast("평가를 삭제했어요");
+  };
+
   // 예정 경기에 상대팀 분석 영상 올리기
   const addScout = async (sid) => {
     const v = scoutInput[sid] || {};
@@ -754,7 +849,24 @@ export default function App() {
                   </div>
                   <div className="field-row">
                     <label className="field"><span>상대팀</span><input value={schedForm.opponent} placeholder="예: FC 상암 (미정이면 비워 두기)" list="opp-list" autoComplete="off" onChange={(e) => setSchedForm((f) => ({ ...f, opponent: e.target.value }))} /></label>
-                    <label className="field"><span>장소</span><input value={schedForm.place} placeholder="예: 망원 유수지" onChange={(e) => setSchedForm((f) => ({ ...f, place: e.target.value }))} /></label>
+                    <div className="field"><span>구장</span>
+                      {(() => {
+                        const cur = findVenue(schedForm.place);
+                        const custom = placeCustom || (schedForm.place && !cur);
+                        return custom ? (
+                          <div className="place-custom">
+                            <input value={schedForm.place} placeholder="새 구장 이름" autoFocus onChange={(e) => setSchedForm((f) => ({ ...f, place: e.target.value }))} />
+                            <button type="button" className="ghost-btn sm" onClick={() => { setPlaceCustom(false); setSchedForm((f) => ({ ...f, place: "" })); }}>목록</button>
+                          </div>
+                        ) : (
+                          <select value={cur ? cur.name : ""} onChange={(e) => { if (e.target.value === "__new__") { setPlaceCustom(true); setSchedForm((f) => ({ ...f, place: "" })); } else setSchedForm((f) => ({ ...f, place: e.target.value })); }}>
+                            <option value="">구장 선택</option>
+                            {[...venues].sort((a, b) => a.name.localeCompare(b.name, "ko")).map((v) => <option key={v.id} value={v.name}>{v.name}{v.size ? ` · ${v.size.toLocaleString()}㎡` : ""}</option>)}
+                            <option value="__new__">＋ 목록에 없는 구장 직접 입력</option>
+                          </select>
+                        );
+                      })()}
+                    </div>
                   </div>
                   <div className="field-row">
                     <label className="field"><span>집합 시간</span><input type="time" value={schedForm.gather || ""} onChange={(e) => setSchedForm((f) => ({ ...f, gather: e.target.value }))} /></label>
@@ -1009,7 +1121,7 @@ export default function App() {
       </header>
 
       <nav className="tabs">
-        {[["home", "홈"], ["board", "순위표"], ["input", "매치 입력"], ["log", "경기 일정"], ["video", "영상"]].map(([k, label]) => (
+        {[["home", "홈"], ["board", "순위표"], ["input", "매치 입력"], ["log", "경기 일정"], ["video", "영상"], ["review", "평가"]].map(([k, label]) => (
           <button key={k} className={tab === k ? "tab on" : "tab"} onClick={() => setTab(k)}>{label}</button>
         ))}
       </nav>
@@ -1037,7 +1149,7 @@ export default function App() {
                 </div>
                 <div className="h-opp">{normTeam(nm.opponent) ? `vs ${nm.opponent}` : "상대 미정"}</div>
                 <div className="h-tags">
-                  {nm.place && <span>{nm.place}</span>}
+                  {nm.place && <span className="place-link-tag" role="button" onClick={(e) => { e.stopPropagation(); setVenueView(nm.place); }}>{(findVenue(nm.place) || {}).name || nm.place} ›</span>}
                   {nm.gather && <span>{nm.gather} 집합</span>}
                   {uni && <span className="uni"><i style={{ background: uniformColor(uni) }} />유니폼 {uni}</span>}
                 </div>
@@ -1364,12 +1476,19 @@ export default function App() {
                       <div className={normTeam(x.opponent) ? "sc-opp" : "sc-opp tbd"}>{normTeam(x.opponent) ? `vs ${x.opponent}` : "상대팀 미정"}</div>
                       {(x.place || x.gather || x.uniform || uniformFromMemo(x.memo)) && (
                         <div className="sc-meta">
-                          {[x.place, x.gather && `${x.gather} 집합`].filter(Boolean).join(" · ")}
+                          {x.place && <button className="place-link" onClick={() => setVenueView(x.place)}>{(findVenue(x.place) || {}).name || x.place} ›</button>}
+                          {x.gather && <span>{x.gather} 집합</span>}
                           {(x.uniform || uniformFromMemo(x.memo)) && <span className="uni"><i style={{ background: uniformColor(x.uniform || uniformFromMemo(x.memo)) }} />유니폼 {x.uniform || uniformFromMemo(x.memo)}</span>}
                         </div>
                       )}
                       {x.memo && <div className="sc-meta">{x.memo}</div>}
                       {x.opponent && <H2H opp={x.opponent} compact />}
+                      {(() => { const t = teamSummary(x.opponent), v = venueSummary(x.place); if (!t && !v) return null; return (
+                        <div className="rv-mini" onClick={() => { setTab("review"); setRvSeg(t ? "team" : "venue"); setRvOpen(t ? normTeam(x.opponent) : venueKey(x.place)); window.scrollTo(0, 0); }}>
+                          {t && <span>팀 평가 · 실력 {t.level || "-"}{t.manner ? ` · 매너 ★${t.manner}` : ""}{t.again ? ` · 재대결 희망 ${t.again}/${t.n}` : ""} ({t.n}회)</span>}
+                          {v && <span>구장 평가 · ★{v.overall} ({v.n})</span>}
+                        </div>
+                      ); })()}
                       <div className="scout">
                         <button className="scout-toggle" onClick={() => setScoutOpen(scoutOpen === x.id ? null : x.id)}>
                           <span>상대 분석 영상{(x.scout || []).length ? ` ${x.scout.length}개` : ""}</span><span>{scoutOpen === x.id ? "▴" : "▾"}</span>
@@ -1537,6 +1656,148 @@ export default function App() {
           </>)}
         </section>
       )}
+
+      {/* ---------- 평가 ---------- */}
+      {tab === "review" && (() => {
+        const Stars = ({ value, onChange, label }) => (
+          <div className="rv-stars"><span className="rv-sl">{label}</span>
+            {[1, 2, 3, 4, 5].map((n) => <button key={n} type="button" aria-label={`${label} ${n}점`} className={n <= value ? "st-on" : ""} onClick={() => onChange(n === value ? 0 : n)}>★</button>)}
+          </div>
+        );
+        const starText = (v) => (v ? `★${v}` : "-");
+        const isTeam = rvSeg === "team";
+        const reviews = isTeam ? (data.teamReviews || []) : [];
+        const keyOf = (r) => (isTeam ? normTeam(r.team) : venueKey(r.venue));
+        const groups = [];
+        reviews.forEach((r) => { const k = keyOf(r); const g = groups.find((x) => x.k === k); if (g) g.items.push(r); else groups.push({ k, name: isTeam ? r.team : r.venue, items: [r] }); });
+        groups.forEach((g) => { g.items.sort((a, b) => (b.date || "").localeCompare(a.date || "")); g.last = g.items[0].date || ""; });
+        groups.sort((a, b) => b.last.localeCompare(a.last));
+        const VTAGS = ["주차 가능", "샤워실", "화장실 좋음", "인조잔디", "천연잔디", "조명", "대중교통 편함"];
+        return (
+          <section>
+            <div className="seg-mini" style={{ marginTop: 0, marginBottom: 12 }}>
+              <button className={isTeam ? "on" : ""} onClick={() => { setRvSeg("team"); setRvForm(null); }}>팀 평가 {(data.teamReviews || []).length}</button>
+              <button className={!isTeam ? "on" : ""} onClick={() => { setRvSeg("venue"); setRvForm(null); }}>구장 평가 {(data.venueReviews || []).length}</button>
+            </div>
+
+            {rvForm ? (
+              <div className="sched-form">
+                {rvForm.kind === "team" ? (
+                  <>
+                    <label className="field"><span>상대팀</span><input value={rvForm.team} placeholder="예: FC 발로레" list="opp-list" autoComplete="off" onChange={(e) => setRvForm((f) => ({ ...f, team: e.target.value }))} /></label>
+                    {rvForm.team.trim() && <H2H opp={rvForm.team} />}
+                    <div className="field"><span>실력 (왼쪽일수록 강팀)</span>
+                      <div className="uni-chips">{LEVELS.map((l) => <button key={l} type="button" className={rvForm.level === l ? "uni-chip on" : "uni-chip"} onClick={() => setRvForm((f) => ({ ...f, level: f.level === l ? "" : l }))}>{l}</button>)}</div>
+                    </div>
+                    <Stars label="매너" value={rvForm.manner} onChange={(n) => setRvForm((f) => ({ ...f, manner: n }))} />
+                    <div className="field"><span>다시 붙고 싶나요?</span>
+                      <div className="uni-chips">{[["yes", "또 하고 싶어요"], ["meh", "글쎄요"], ["no", "비추"]].map(([k, l]) => <button key={k} type="button" className={rvForm.again === k ? "uni-chip on" : "uni-chip"} onClick={() => setRvForm((f) => ({ ...f, again: f.again === k ? "" : k }))}>{l}</button>)}</div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <label className="field"><span>구장</span><input value={rvForm.venue} placeholder="예: 살곶이 체육공원 축구장" list="venue-list" autoComplete="off" onChange={(e) => setRvForm((f) => ({ ...f, venue: e.target.value }))} /></label>
+                    <datalist id="venue-list">{venues.map((v) => <option key={v.id} value={v.name} />)}</datalist>
+                    <Stars label="잔디" value={rvForm.turf} onChange={(n) => setRvForm((f) => ({ ...f, turf: n }))} />
+                    <Stars label="시설" value={rvForm.facility} onChange={(n) => setRvForm((f) => ({ ...f, facility: n }))} />
+                    <Stars label="접근성" value={rvForm.access} onChange={(n) => setRvForm((f) => ({ ...f, access: n }))} />
+                    <div className="field"><span>특징</span>
+                      <div className="uni-chips">{VTAGS.map((t) => <button key={t} type="button" className={rvForm.tags.includes(t) ? "uni-chip on" : "uni-chip"} onClick={() => setRvForm((f) => ({ ...f, tags: f.tags.includes(t) ? f.tags.filter((x) => x !== t) : [...f.tags, t] }))}>{t}</button>)}</div>
+                    </div>
+                  </>
+                )}
+                <label className="field"><span>경기 날짜</span><input type="date" value={rvForm.date} onChange={(e) => setRvForm((f) => ({ ...f, date: e.target.value }))} /></label>
+                <label className="field"><span>한줄평</span><input value={rvForm.memo} placeholder={rvForm.kind === "team" ? "예: 압박 강함, 거친 태클 조심" : "예: 주차 협소, 샤워실 없음"} onChange={(e) => setRvForm((f) => ({ ...f, memo: e.target.value }))} /></label>
+                <div className="sched-actions">
+                  <button className="ghost-btn" onClick={() => setRvForm(null)}>취소</button>
+                  <button className="solid-btn" disabled={busy} onClick={saveReview}>평가 올리기</button>
+                </div>
+              </div>
+            ) : (
+              <button className="add-sched" onClick={() => setRvForm(isTeam
+                ? { kind: "team", team: "", date: todayStr(), level: "", manner: 0, again: "", memo: "" }
+                : { kind: "venue", venue: "", date: todayStr(), turf: 0, facility: 0, access: 0, tags: [], memo: "" })}>+ {isTeam ? "팀 평가" : "구장 평가"} 올리기</button>
+            )}
+
+            {!groups.length && !rvForm && <div className="empty">{isTeam ? "아직 팀 평가가 없어요. 붙어 본 팀을 평가해 보세요." : "아직 구장 평가가 없어요. 뛰어 본 구장을 평가해 보세요."}</div>}
+
+            {!isTeam && (
+              <div className="venue-list">
+                <div className="vl-note">넓이순 · 기준: 성균관대 운동장 {SKKU_SIZE.toLocaleString()}㎡</div>
+                {[...venues].sort((a, b) => (b.size || 0) - (a.size || 0)).map((v) => {
+                  const sm = venueSummary(v.name);
+                  const pct = v.size ? Math.min(100, Math.round((v.size / 9000) * 100)) : 0;
+                  return (
+                    <button className={`vl-row ${v.name === "성균관대학교 운동장" ? "base" : ""}`} key={v.id} onClick={() => setVenueView(v.name)}>
+                      <span className="vl-main">
+                        <span className="vl-name">{v.name}</span>
+                        <span className="vl-bar"><i style={{ width: `${pct}%` }} className={v.size && v.size >= SKKU_SIZE ? "big" : ""} /><em style={{ left: `${Math.round((SKKU_SIZE / 9000) * 100)}%` }} /></span>
+                      </span>
+                      <span className="vl-side">
+                        <b>{v.size ? `${v.size.toLocaleString()}㎡` : "넓이 미입력"}</b>
+                        <small>{v.shoes ? v.shoes : ""}{sm ? `${v.shoes ? " · " : ""}★${sm.overall}` : ""}</small>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="log-list">
+              {groups.map((g) => {
+                const open = rvOpen === g.k;
+                const t = isTeam ? teamSummary(g.name) : null;
+                const v = !isTeam ? venueSummary(g.name) : null;
+                const tagCount = {};
+                if (!isTeam) g.items.forEach((r) => (r.tags || []).forEach((x) => { tagCount[x] = (tagCount[x] || 0) + 1; }));
+                return (
+                  <div className="v-group" key={g.k}>
+                    <button className="rv-head" onClick={() => setRvOpen(open ? null : g.k)}>
+                      <span className="v-opp">{g.name}</span>
+                      <span className="rv-count">{g.items.length}개 {open ? "▴" : "▾"}</span>
+                    </button>
+                    {isTeam ? (
+                      <div className="rv-sum">
+                        <span>실력 <b className="lv">{t.level || (t.skill ? starText(t.skill) : "-")}</b>{t.levelAvg && t.levelAvg !== t.level ? <small> (평균 {t.levelAvg})</small> : null}</span>{t.manner ? <span>매너 <b>{starText(t.manner)}</b></span> : null}
+                        {t.again > 0 && <span>재대결 희망 <b>{t.again}/{t.n}</b></span>}
+                      </div>
+                    ) : (
+                      <div className="rv-sum">
+                        <span>종합 <b>{starText(v.overall)}</b></span>
+                        <span>잔디 {starText(avg(g.items.map((r) => r.turf).filter(Boolean)))}</span>
+                        <span>시설 {starText(avg(g.items.map((r) => r.facility).filter(Boolean)))}</span>
+                        <span>접근성 {starText(avg(g.items.map((r) => r.access).filter(Boolean)))}</span>
+                      </div>
+                    )}
+                    {!isTeam && Object.keys(tagCount).length > 0 && <div className="rv-tags">{Object.entries(tagCount).sort((a, b) => b[1] - a[1]).map(([x, c]) => <span key={x}>{x}{c > 1 ? ` ${c}` : ""}</span>)}</div>}
+                    {isTeam && open && <H2H opp={g.name} />}
+                    {open && (
+                      <div className="rv-list">
+                        {g.items.map((r) => (
+                          <div className="rv-item" key={r.id}>
+                            <div className="rv-item-top">
+                              <span className="v-date">{r.date ? fmtDate(r.date) : ""}</span>
+                              <span className="rv-item-stars">{isTeam ? `실력 ${r.level || starText(r.skill)}${r.manner ? ` · 매너 ${starText(r.manner)}` : ""}${r.again === "yes" ? " · 또 하고 싶어요" : r.again === "no" ? " · 비추" : ""}` : `잔디 ${starText(r.turf)} · 시설 ${starText(r.facility)} · 접근성 ${starText(r.access)}`}</span>
+                              {confirmRv === r.id
+                                ? <span className="rv-del"><button className="ghost-btn sm danger-t" onClick={() => deleteReview(rvSeg, r.id)}>삭제</button><button className="ghost-btn sm" onClick={() => setConfirmRv(null)}>취소</button></span>
+                                : <button className="ghost-btn sm" aria-label="평가 삭제" onClick={() => setConfirmRv(r.id)}>×</button>}
+                            </div>
+                            {r.memo && <div className="rv-memo">{r.memo}</div>}
+                            {!isTeam && (r.tags || []).length > 0 && <div className="rv-tags">{r.tags.map((x) => <span key={x}>{x}</span>)}</div>}
+                          </div>
+                        ))}
+                        <button className="link-btn" onClick={() => setRvForm(isTeam
+                          ? { kind: "team", team: g.name, date: todayStr(), level: "", manner: 0, again: "", memo: "" }
+                          : { kind: "venue", venue: g.name, date: todayStr(), turf: 0, facility: 0, access: 0, tags: [], memo: "" })}>+ 이 {isTeam ? "팀" : "구장"} 평가 추가</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        );
+      })()}
 
       {/* ---------- 영상 ---------- */}
       {tab === "video" && (() => {
@@ -1715,6 +1976,68 @@ export default function App() {
         );
       })()}
 
+      {/* ---------- 구장 정보 ---------- */}
+      {venueView && (() => {
+        const v = findVenue(venueView) || { name: venueView, size: null, aliases: [], shoes: "" };
+        const sm = venueSummary(v.name);
+        const vv = findVenue(v.name);
+        const upcoming = (data.schedule || []).filter((x) => (vv ? findVenue(x.place) === vv : vKey(x.place) === vKey(v.name)));
+        const base = SKKU_SIZE, max = Math.max(base, v.size || 0);
+        return (
+          <div className="pp" role="dialog" aria-modal="true" aria-label={`${v.name} 구장 정보`}>
+            <div className="pp-in">
+              <div className="pp-top"><button className="pp-back" onClick={() => setVenueView(null)}>← 닫기</button></div>
+              <div className="pp-name">{v.name}</div>
+              {(v.aliases || []).length > 0 && <div className="vv-alias">다른 이름: {v.aliases.join(", ")}</div>}
+
+              <div className="section-label sub-title">넓이</div>
+              <div className="pp-box">
+                <div className="vv-size">{v.size ? `${v.size.toLocaleString()}㎡` : "아직 넓이 정보가 없어요"}</div>
+                {v.size ? <div className="vv-cmp">{sizeCompare(v.size)}</div> : null}
+                {v.size ? (
+                  <div className="vv-bars">
+                    <div className="vv-bar"><span>이 구장</span><span className="vv-t"><i style={{ width: `${Math.round((v.size / max) * 100)}%` }} /></span></div>
+                    <div className="vv-bar"><span>성균관대</span><span className="vv-t"><i className="base" style={{ width: `${Math.round((base / max) * 100)}%` }} /></span></div>
+                  </div>
+                ) : null}
+                <div className="vv-edit">
+                  <input key={v.name + (v.size || "")} type="number" inputMode="numeric" placeholder="넓이(㎡) 입력" defaultValue={v.size || ""} id="vv-size-input" />
+                  <button className="ghost-btn sm" disabled={busy} onClick={() => { const n = Number(document.getElementById("vv-size-input").value); if (n > 0) updateVenue(v.name, { size: n }); }}>넓이 저장</button>
+                </div>
+              </div>
+
+              <div className="section-label sub-title">추천 신발</div>
+              <div className="pp-box">
+                <div className="uni-chips">
+                  {["축구화", "풋살화", "둘 다 가능"].map((x) => <button key={x} type="button" className={v.shoes === x ? "uni-chip on" : "uni-chip"} disabled={busy} onClick={() => updateVenue(v.name, { shoes: v.shoes === x ? "" : x })}>{x}</button>)}
+                </div>
+                <p className="note" style={{ margin: "8px 0 0" }}>{v.shoes ? `이 구장은 ${v.shoes === "둘 다 가능" ? "축구화·풋살화 모두 괜찮아요" : `${v.shoes}를 추천해요`}.` : "뛰어 본 사람이 골라 주세요. 팀원 모두에게 보여요."}</p>
+              </div>
+
+              <div className="section-label sub-title">구장 평가 {sm ? <span className="sub">★{sm.overall} · {sm.n}개</span> : null}</div>
+              {sm ? (
+                <div className="pp-list">
+                  {[...sm.items].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((r) => (
+                    <div className="pp-row" key={r.id}>
+                      <div className="pp-row-top"><span className="log-date">{r.date ? fmtDate(r.date) : ""}</span></div>
+                      <div className="rv-item-stars">잔디 {r.turf ? `★${r.turf}` : "-"} · 시설 {r.facility ? `★${r.facility}` : "-"} · 접근성 {r.access ? `★${r.access}` : "-"}</div>
+                      {r.memo && <div className="rv-memo">{r.memo}</div>}
+                      {(r.tags || []).length > 0 && <div className="rv-tags">{r.tags.map((x) => <span key={x}>{x}</span>)}</div>}
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="note">아직 평가가 없어요.</p>}
+              <button className="link-btn" onClick={() => { setVenueView(null); setTab("review"); setRvSeg("venue"); setRvForm({ kind: "venue", venue: v.name, date: todayStr(), turf: 0, facility: 0, access: 0, tags: [], memo: "" }); window.scrollTo(0, 0); }}>+ 이 구장 평가하기</button>
+
+              {upcoming.length > 0 && (<>
+                <div className="section-label sub-title">이 구장 예정 경기</div>
+                <div className="pp-list">{upcoming.map((x) => <div className="pp-row" key={x.id}><span className="log-date">{fmtDate(x.date)}{timeRange(x) ? ` · ${timeRange(x)}` : ""}</span> <span className="opp">{normTeam(x.opponent) ? `vs ${x.opponent}` : "상대 미정"}</span></div>)}</div>
+              </>)}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ---------- 되돌리기 ---------- */}
       {backups && (
         <div className="pp" role="dialog" aria-modal="true" aria-label="기록 되돌리기">
@@ -1829,7 +2152,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .rec dd { margin: 2px 0 0; font-size: 16px; font-weight: 700; }
 
 /* tabs */
-.tabs { display: flex; gap: 4px; margin: 0; padding: 10px 16px; position: sticky; top: 0; z-index: 5; background: rgba(238,241,236,.92); backdrop-filter: saturate(1.4) blur(10px); -webkit-backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--line); padding-top: calc(env(safe-area-inset-top, 0px) + 10px); }
+.tabs { display: flex; gap: 4px; margin: 0; padding: 10px 16px; overflow-x: auto; scrollbar-width: none; position: sticky; top: 0; z-index: 5; background: rgba(238,241,236,.92); backdrop-filter: saturate(1.4) blur(10px); -webkit-backdrop-filter: saturate(1.4) blur(10px); border-bottom: 1px solid var(--line); padding-top: calc(env(safe-area-inset-top, 0px) + 10px); }
 .tab { flex: 1; padding: 9px 0; border: 0; background: transparent; border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--ink-2); white-space: nowrap; }
 @media (max-width: 400px) { .tab { font-size: 13px; } .tabs { gap: 2px; padding-left: 10px; padding-right: 10px; } }
 .v-textarea, .field select { padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); font: inherit; font-size: 15px; color: var(--ink); resize: vertical; }
@@ -1837,6 +2160,55 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .scout-toggle { width: 100%; display: flex; justify-content: space-between; border: 0; background: none; padding: 4px 0; font-size: 13.5px; font-weight: 700; color: var(--ink-2); }
 .scout-body { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
 .scout-tag { background: var(--gold-soft) !important; color: #8A6A10 !important; }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs .tab { flex: 1 0 auto; padding-left: 12px; padding-right: 12px; }
+.rv-stars { display: flex; align-items: center; gap: 2px; }
+.rv-sl { width: 52px; font-size: 13px; color: var(--ink-2); font-weight: 600; }
+.rv-stars button { border: 0; background: none; font-size: 24px; line-height: 1; color: var(--line); padding: 2px; }
+.rv-stars button.st-on { color: var(--gold); }
+.rv-head { width: 100%; display: flex; align-items: center; gap: 8px; border: 0; background: none; padding: 0; text-align: left; }
+.rv-count { font-size: 12.5px; color: var(--ink-3); flex: none; }
+.rv-sum { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 13px; color: var(--ink-2); }
+.rv-sum b { color: #8A6A10; }
+.rv-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.rv-tags span { font-size: 12px; background: var(--chalk); color: var(--ink-2); border-radius: 999px; padding: 2px 9px; }
+.rv-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line-2); }
+.rv-item { background: var(--chalk); border-radius: 10px; padding: 10px 12px; }
+.rv-item-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rv-item-stars { font-size: 12.5px; color: var(--ink-2); flex: 1; min-width: 0; }
+.rv-del { display: flex; gap: 4px; }
+.rv-memo { font-size: 14px; margin-top: 4px; line-height: 1.5; }
+.rv-mini { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; color: #8A6A10; background: var(--gold-soft); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.place-link { border: 0; background: none; padding: 0; font: inherit; color: var(--grass); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: rgba(28,107,72,.3); }
+.place-link-tag { cursor: pointer; color: var(--grass) !important; font-weight: 700; }
+.place-custom { display: flex; gap: 6px; }
+.place-custom input { flex: 1; min-width: 0; }
+.field select { width: 100%; min-height: 44px; }
+.lv { color: var(--ink) !important; font-weight: 800; }
+.venue-list { display: flex; flex-direction: column; background: var(--card); border: 1px solid var(--line); border-radius: var(--r); overflow: hidden; margin: 12px 0; }
+.vl-note { font-size: 12px; color: var(--ink-3); padding: 10px 14px 4px; }
+.vl-row { display: flex; align-items: center; gap: 12px; border: 0; background: none; text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line-2); }
+.vl-row:last-child { border-bottom: 0; }
+.vl-row.base { background: var(--gold-soft); }
+.vl-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.vl-name { font-size: 14px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vl-bar { position: relative; height: 6px; background: var(--line-2); border-radius: 3px; }
+.vl-bar i { display: block; height: 100%; border-radius: 3px; background: #9FB5A6; }
+.vl-bar i.big { background: var(--grass); }
+.vl-bar em { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--gold); }
+.vl-side { flex: none; text-align: right; display: flex; flex-direction: column; }
+.vl-side b { font-size: 13.5px; }
+.vl-side small { font-size: 11.5px; color: var(--ink-3); }
+.vv-alias { font-size: 12.5px; color: var(--ink-3); margin-top: 2px; }
+.vv-size { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+.vv-cmp { font-size: 14px; color: var(--grass); font-weight: 700; margin-top: 2px; }
+.vv-bars { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.vv-bar { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-2); }
+.vv-t { height: 10px; background: var(--line-2); border-radius: 5px; overflow: hidden; }
+.vv-t i { display: block; height: 100%; background: var(--grass); border-radius: 5px; }
+.vv-t i.base { background: var(--gold); }
+.vv-edit { display: flex; gap: 6px; margin-top: 12px; }
+.vv-edit input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; background: var(--card); }
 .name-preview { background: var(--chalk); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .name-preview div { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .np-i { width: 18px; height: 18px; border-radius: 50%; background: var(--pitch); color: #fff; font-size: 11px; font-weight: 700; display: grid; place-items: center; flex: none; }
