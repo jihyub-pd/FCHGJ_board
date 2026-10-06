@@ -230,6 +230,7 @@ export default function App() {
   const [form, setForm] = useState(emptyForm());
   const [formTab, setFormTab] = useState("q1"); // 매치 입력 내 쿼터별 전술판 탭 제어
   const [logTab, setLogTab] = useState({}); // 로그 내 쿼터 보기 토글용
+  const [lineupOpen, setLineupOpen] = useState(null); // 예정 경기 카드에서 펼친 라인업 (일정 id)
   const [sortKey, setSortKey] = useState("points");
   const [sortDir, setSortDir] = useState(-1);
   const [toast, setToast] = useState("");
@@ -624,11 +625,82 @@ export default function App() {
     if (ok) showToast("일정을 삭제했어요");
   };
 
+  // 경기 전에 짜 둔 라인업(참석 예정 + 쿼터별 포메이션)을 폼 모양으로
+  const lineupToForm = (x) => {
+    const base = emptyForm();
+    const lu = x.lineup || {};
+    return {
+      attendees: [...(lu.attendees || [])],
+      formations: { q1: { ...base.formations.q1, ...((lu.formations || {}).q1 || {}) }, q2: { ...base.formations.q2, ...((lu.formations || {}).q2 || {}) },
+                    q3: { ...base.formations.q3, ...((lu.formations || {}).q3 || {}) }, q4: { ...base.formations.q4, ...((lu.formations || {}).q4 || {}) } }
+    };
+  };
+
   const startResult = (x) => {
-    setForm({ ...emptyForm(), date: x.date, opponent: normTeam(x.opponent) ? x.opponent : "", place: x.place || "", scheduleId: x.id });
+    const hasLineup = !!(x.lineup && (x.lineup.attendees || []).length);
+    setForm({ ...emptyForm(), date: x.date, opponent: normTeam(x.opponent) ? x.opponent : "", place: x.place || "", scheduleId: x.id, ...(hasLineup ? lineupToForm(x) : {}) });
+    setFormTab("q1");
     setTab("input");
     window.scrollTo(0, 0);
-    showToast("일정 정보를 불러왔어요. 스코어와 참석 선수를 입력해 주세요.");
+    showToast(hasLineup ? "경기 전 라인업을 불러왔어요. 실제로 뛴 대로 고치고 스코어를 입력해 주세요." : "일정 정보를 불러왔어요. 스코어와 참석 선수를 입력해 주세요.");
+  };
+
+  // 경기 전 포메이션 짜기 (예정 경기에 저장 → 팀원들이 경기 일정·홈에서 확인)
+  const startLineup = (x) => {
+    setForm({ ...emptyForm(), date: x.date, opponent: normTeam(x.opponent) ? x.opponent : "", place: x.place || "", lineupFor: x.id, ...lineupToForm(x) });
+    setFormTab("q1");
+    setTab("input");
+    window.scrollTo(0, 0);
+  };
+
+  const saveLineup = async () => {
+    const sid = form.lineupFor;
+    if (!sid || !form.attendees.length) return;
+    const lineup = { attendees: [...form.attendees], formations: form.formations, updatedAt: new Date().toISOString() };
+    let found = true;
+    const ok = await saveChange((d) => {
+      const list = d.schedule || [];
+      if (!list.some((x) => x.id === sid)) { found = false; return d; }
+      return { ...d, schedule: list.map((x) => (x.id === sid ? { ...x, lineup } : x)) };
+    });
+    if (!ok) return;
+    if (!found) { showToast("이 일정이 없어졌어요 (이미 결과가 입력됐거나 삭제됨)"); return; }
+    setForm(emptyForm());
+    setTab("log"); setMatchSeg("upcoming"); setLineupOpen(sid);
+    window.scrollTo(0, 0);
+    showToast("포메이션을 저장했어요. 팀원들이 경기 일정에서 볼 수 있어요.");
+  };
+
+  const clearLineup = async (sid) => {
+    const ok = await saveChange((d) => ({ ...d, schedule: (d.schedule || []).map((x) => { if (x.id !== sid) return x; const { lineup, ...rest } = x; return rest; }) }));
+    if (ok) { setLineupOpen(null); showToast("포메이션을 지웠어요"); }
+  };
+
+  // 카톡 공유용 라인업 텍스트
+  const lineupText = (x) => {
+    const lu = x.lineup || {};
+    const F = lu.formations || {};
+    const v = (q, k) => (F[q] || {})[k] || "-";
+    const lines = [`[헌강자 라인업] ${fmtDate(x.date)}${normTeam(x.opponent) ? ` vs ${x.opponent}` : ""}`, `참석 ${(lu.attendees || []).length}명`];
+    ["q1", "q2", "q3", "q4"].forEach((q, i) => {
+      const f = F[q] || {};
+      const used = Object.entries(f).filter(([k, n]) => k !== "referee" && n).map(([, n]) => n);
+      if (!used.length && !f.referee) return;
+      const wait = (lu.attendees || []).filter((n) => !Object.values(f).includes(n));
+      lines.push("", `■ ${i + 1}쿼터${f.referee ? ` (주심 ${f.referee})` : ""}`,
+        `ST ${v(q, "ST")}`,
+        `LM ${v(q, "LM")} · CAM ${v(q, "CAM")} · RM ${v(q, "RM")}`,
+        `CM ${v(q, "CM1")} · CM ${v(q, "CM2")}`,
+        `LB ${v(q, "LB")} · CB ${v(q, "CB1")} · CB ${v(q, "CB2")} · RB ${v(q, "RB")}`,
+        `GK ${v(q, "GK")}`);
+      if (wait.length) lines.push(`대기 ${wait.join(", ")}`);
+    });
+    return lines.join("\n");
+  };
+  const copyLineup = async (x) => {
+    const t = lineupText(x);
+    try { await navigator.clipboard.writeText(t); showToast("라인업을 복사했어요. 단톡방에 붙여 넣으세요."); }
+    catch (e) { window.prompt("아래 내용을 복사하세요", t); }
   };
 
   // 전에 입력한 상대팀 이름 (자동완성용, 같은 팀은 최근 표기 하나만)
@@ -1156,6 +1228,7 @@ export default function App() {
                   {nm.place && <span className="place-link-tag" role="button" onClick={(e) => { e.stopPropagation(); setVenueView(nm.place); }}>{(findVenue(nm.place) || {}).name || nm.place} ›</span>}
                   {nm.gather && <span>{nm.gather} 집합</span>}
                   {uni && <span className="uni"><i style={{ background: uniformColor(uni) }} />유니폼 {uni}</span>}
+                  {nm.lineup && (nm.lineup.attendees || []).length > 0 && <span className="place-link-tag" role="button" onClick={(e) => { e.stopPropagation(); setTab("log"); setMatchSeg("upcoming"); setLineupOpen(nm.id); window.scrollTo(0, 0); }}>포메이션 보기 ›</span>}
                 </div>
                 {(() => {
                   const v = findVenue(nm.place);
@@ -1403,6 +1476,12 @@ export default function App() {
             <div className="from-sched">예정 경기의 결과를 입력 중이에요. 저장하면 예정 목록에서 지난 경기로 옮겨져요.
               <button onClick={() => setForm(emptyForm())}>새 매치로</button></div>
           )}
+          {form.lineupFor && (
+            <div className="from-sched lineup-mode"><span><b>경기 전 포메이션 짜기</b> · {fmtDate(form.date)}{normTeam(form.opponent) ? ` vs ${form.opponent}` : ""}<br />
+              <small>저장하면 팀원들이 경기 일정에서 볼 수 있어요. 경기 후 '결과 입력'을 누르면 이 라인업이 그대로 불러와져요.</small></span>
+              <button onClick={() => { setForm(emptyForm()); setTab("log"); setMatchSeg("upcoming"); }}>취소</button></div>
+          )}
+          {!form.lineupFor && (<>
           <div className="field-row">
             <label className="field">
               <span>날짜</span>
@@ -1433,9 +1512,10 @@ export default function App() {
             ))}
             <button className="game-add" onClick={addGame}>+ 게임 추가</button>
           </div>
+          </>)}
 
           <div className="section-label">
-            참석 선수 <b>{form.attendees.length}</b>명{form.attendees.some(isMerc) && <span className="sub">(용병 {form.attendees.filter(isMerc).length})</span>}
+            {form.lineupFor ? "참석 예정" : "참석 선수"} <b>{form.attendees.length}</b>명{form.attendees.some(isMerc) && <span className="sub">(용병 {form.attendees.filter(isMerc).length})</span>}
             <input className="roster-search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="이름 검색" />
           </div>
           <div className="chip-grid">
@@ -1467,7 +1547,7 @@ export default function App() {
           </div>
 
           {/* 쿼터별 포메이션 전술판 전용 배치 탭 영역 */}
-          <div className="section-label">당일 쿼터별 라인업 전술판</div>
+          <div className="section-label">{form.lineupFor ? "쿼터별 포메이션" : "당일 쿼터별 라인업 전술판"}{form.scheduleId && !form.lineupFor && <span className="sub">경기 전 라인업에서 바뀐 자리만 고치면 돼요</span>}</div>
           <div className="quarter-nav-tabs">
             {["q1", "q2", "q3", "q4"].map((q) => (
               <button key={q} type="button" className={formTab === q ? "q-nav-btn activated" : "q-nav-btn"} onClick={() => setFormTab(q)}>
@@ -1479,6 +1559,11 @@ export default function App() {
             {renderTacticalBoard(formTab, false)}
           </div>
 
+          {form.lineupFor ? (
+            <button className="save" disabled={!form.attendees.length || busy} onClick={saveLineup}>
+              {busy ? "저장 중…" : !form.attendees.length ? "참석 예정 선수를 고르면 저장할 수 있어요" : "포메이션 저장"}
+            </button>
+          ) : (<>
           {form.attendees.length > 0 && (
             <>
               <div className="section-label">기록 입력 <span className="sub">득점 · 도움 · MOM(★는 1명)</span></div>
@@ -1515,6 +1600,7 @@ export default function App() {
           <button className="save" disabled={!canSave || busy} onClick={saveMatch}>
             {busy ? "저장 중…" : !canSave ? "스코어와 참석 선수를 입력하면 저장할 수 있어요" : form.editId ? "수정 저장" : "매치 저장"}
           </button>
+          </>)}
         </section>
       )}
 
@@ -1599,6 +1685,30 @@ export default function App() {
                               <button className="solid-btn" disabled={busy} onClick={() => addScout(x.id)}>상대 영상 올리기</button>
                             </div>
                           </div>
+                        )}
+                      </div>
+                      <div className="scout lineup">
+                        {x.lineup && (x.lineup.attendees || []).length ? (<>
+                          <button className="scout-toggle" onClick={() => setLineupOpen(lineupOpen === x.id ? null : x.id)}>
+                            <span>포메이션 · 참석 예정 {x.lineup.attendees.length}명</span><span>{lineupOpen === x.id ? "▴" : "▾"}</span>
+                          </button>
+                          {lineupOpen === x.id && (
+                            <div className="scout-body">
+                              <div className="quarter-nav-tabs">
+                                {["q1", "q2", "q3", "q4"].map((q, i) => (
+                                  <button key={q} type="button" className={(logTab[x.id] || "q1") === q ? "q-nav-btn activated" : "q-nav-btn"} onClick={() => setLogTab({ ...logTab, [x.id]: q })}>{i + 1}쿼터</button>
+                                ))}
+                              </div>
+                              <div className="quarter-board-wrapper">{renderTacticalBoard(logTab[x.id] || "q1", true, x.lineup)}</div>
+                              <div className="sc-actions">
+                                <button className="ghost-btn sm" disabled={busy} onClick={() => clearLineup(x.id)}>지우기</button>
+                                <button className="ghost-btn sm" onClick={() => copyLineup(x)}>카톡용 복사</button>
+                                <button className="solid-btn sm" onClick={() => startLineup(x)}>포메이션 수정</button>
+                              </div>
+                            </div>
+                          )}
+                        </>) : (
+                          <button className="scout-toggle" onClick={() => startLineup(x)}><span>포메이션 짜기</span><span>›</span></button>
                         )}
                       </div>
                       {confirmSched === x.id ? (
@@ -2428,6 +2538,8 @@ button:disabled { opacity: .55; cursor: default; }
 .sc-opp.tbd { color: var(--ink-3); font-weight: 700; }
 .sc-meta { font-size: 13.5px; color: var(--ink-2); margin-top: 2px; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; }
 .from-sched { background: var(--gold-soft); border-radius: 12px; padding: 12px 14px; font-size: 13.5px; line-height: 1.5; margin-bottom: 14px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.from-sched.lineup-mode small { color: var(--ink-2); }
+.scout.lineup { margin-top: 8px; }
 .from-sched button { flex: none; border: 0; background: var(--card); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; font-weight: 600; }
 .seg-mini { display: flex; gap: 4px; background: var(--line-2); padding: 3px; border-radius: 10px; margin-top: 12px; }
 .seg-mini button { flex: 1; border: 0; background: none; padding: 7px 0; border-radius: 8px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
